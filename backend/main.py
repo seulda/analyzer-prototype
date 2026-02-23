@@ -224,8 +224,12 @@ async def analyze_roof(req: AnalyzeRequest):
         face_predictions = [p for p in predictions if p["class"] == "roof_face"]
         misdetected = [p for p in predictions if p["class"] == "misdetected"]
 
-        # GeoJSON에 roof_face + misdetected 모두 포함 (misdetected는 노란색 표출)
-        geojson_predictions = face_predictions + misdetected
+        # GeoJSON에 building_outline + roof_face + misdetected 모두 포함
+        geojson_predictions = (
+            ([building_outline] if building_outline else [])
+            + face_predictions
+            + misdetected
+        )
 
         # GeoJSON 변환 (roof_face + misdetected)
         geojson, stats = predictions_to_geojson(

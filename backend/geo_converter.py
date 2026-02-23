@@ -21,7 +21,7 @@ FACE_COLORS = [
 
 # 클래스별 색상 및 메타데이터
 CLASS_META = {
-    "building_outline": {"color": "#FFFFFF", "label": "건물 윤곽", "type": "outline"},
+    "building_outline": {"color": "#2196F3", "label": "건물 윤곽", "type": "outline"},
     "misdetected": {"color": "#FFEB3B", "label": "오검출", "type": "misdetected"},
     "roof_face": {"color": "#F44336", "label": "지붕면", "type": "roof"},
     "Roof": {"color": "#4CAF50", "label": "지붕", "type": "roof"},

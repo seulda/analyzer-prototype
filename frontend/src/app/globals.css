@@ -21,3 +21,65 @@ body {
   width: 100%;
   border-radius: 8px;
 }
+
+/* 파이프라인 단계별 토글 컨트롤 */
+.pipeline-control {
+  display: flex;
+  flex-direction: row;
+  gap: 0;
+  background: #fff;
+  border-radius: 4px;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+  margin-top: 10px !important;
+}
+
+.pipeline-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  border: none;
+  background: #fff;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: #333;
+  transition: background 0.15s, opacity 0.15s;
+  border-right: 1px solid #ddd;
+  white-space: nowrap;
+}
+
+.pipeline-btn:last-child {
+  border-right: none;
+}
+
+.pipeline-btn:hover:not(.disabled) {
+  background: #f0f0f0;
+}
+
+.pipeline-btn.active {
+  background: #e8f4fd;
+  color: #1a73e8;
+}
+
+.pipeline-btn.disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.pipeline-btn:not(.active):not(.disabled) {
+  opacity: 0.5;
+}
+
+.pipeline-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.pipeline-label {
+  line-height: 1;
+}

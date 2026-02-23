@@ -148,8 +148,8 @@ def _get_building_mask(
     click_y: int,
 ) -> tuple[np.ndarray, float]:
     """
-    SAM mask[2] (가장 큰 영역 = whole object)를 건물 전체 마스크로 사용.
-    mask[2]가 너무 작으면 해당 bbox를 box prompt로 SAM 재호출.
+    SAM argmax(scores) (최고 점수 마스크)를 건물 전체 마스크로 사용.
+    마스크가 너무 작으면 해당 bbox를 box prompt로 SAM 재호출.
 
     Returns:
         (building_mask, confidence)
@@ -166,9 +166,10 @@ def _get_building_mask(
         multimask_output=True,
     )
 
-    # mask[2] = 가장 큰 영역 (whole object 계층)
-    building_mask = masks[2]
-    confidence = float(scores[2])
+    # argmax(scores) = 샘플 노트북과 동일 방식 (최고 점수 마스크)
+    best_idx = int(np.argmax(scores))
+    building_mask = masks[best_idx]
+    confidence = float(scores[best_idx])
 
     # mask[2]의 면적이 이미지의 0.5% 미만이면 부족하다고 판단 → box prompt
     mask_area = building_mask.sum()

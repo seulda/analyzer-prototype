@@ -114,13 +114,14 @@ export default function RoofMap({ center, data, selectable, onBuildingClick }: P
     if (!data) return;
 
     const geoLayer = L.geoJSON(data.geojson as GeoJSON.FeatureCollection, {
-      style: () => {
+      style: (feature) => {
+        const color = feature?.properties?.color || "#ff0000";
         return {
-          color: "#ff0000",
-          weight: 4,
+          color: color,
+          weight: 2,
           opacity: 1,
-          fillColor: "#ff0000",
-          fillOpacity: 0.4,
+          fillColor: color,
+          fillOpacity: 0.35,
         };
       },
       onEachFeature: (feature, layer) => {
@@ -130,8 +131,8 @@ export default function RoofMap({ center, data, selectable, onBuildingClick }: P
         const popup = `
           <div style="font-size:13px; line-height:1.6; min-width:160px;">
             <strong style="font-size:14px;">${p.label}</strong>
-            <span style="background:${p.color}; color:#fff; padding:1px 6px; border-radius:3px; font-size:11px; margin-left:6px;">
-              ${p.type === "obstacle" ? "장애물" : "지붕면"}
+            <span style="background:${p.color}; color:${p.type === "misdetected" ? "#000" : "#fff"}; padding:1px 6px; border-radius:3px; font-size:11px; margin-left:6px;">
+              ${p.type === "obstacle" ? "장애물" : p.type === "misdetected" ? "오검출" : "지붕면"}
             </span>
             <hr style="margin:6px 0; border-color:#eee;" />
             <div>면적: <strong>${p.area_m2} m²</strong></div>

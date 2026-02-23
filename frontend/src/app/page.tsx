@@ -32,6 +32,9 @@ export default function Home() {
       const result = await analyzeRoof(lat, lng);
       setData(result);
       setPhase("result");
+      if (result.warning) {
+        alert(result.warning);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "분석 실패");
       setPhase("select");
@@ -90,6 +93,12 @@ export default function Home() {
           selectable={phase === "select"}
           onBuildingClick={handleBuildingClick}
         />
+        {phase === "analyzing" && (
+          <div style={styles.overlay}>
+            <div style={styles.spinner} />
+            <p style={styles.overlayText}>지붕 분석 중...</p>
+          </div>
+        )}
       </main>
     </div>
   );
@@ -159,5 +168,29 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#aaa",
     fontSize: "12px",
     cursor: "pointer",
+  },
+  overlay: {
+    position: "absolute",
+    inset: 0,
+    background: "rgba(0, 0, 0, 0.5)",
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 1000,
+    gap: "16px",
+  },
+  spinner: {
+    width: "48px",
+    height: "48px",
+    border: "4px solid rgba(255, 255, 255, 0.2)",
+    borderTop: "4px solid #4CAF50",
+    borderRadius: "50%",
+    animation: "spin 1s linear infinite",
+  },
+  overlayText: {
+    color: "#fff",
+    fontSize: "16px",
+    fontWeight: 600,
   },
 };

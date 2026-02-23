@@ -12,6 +12,7 @@ const CLASS_LABELS: Record<string, string> = {
   roof_face_east: "지붕면 (동)",
   roof_face_west: "지붕면 (서)",
   roof_face: "지붕면",
+  misdetected: "오검출",
   skylight: "천창",
   vent: "환기구",
   chimney: "굴뚝",
@@ -22,6 +23,7 @@ const CLASS_LABELS: Record<string, string> = {
 };
 
 const CLASS_COLORS: Record<string, string> = {
+  misdetected: "#FFEB3B",
   skylight: "#2196F3",
   vent: "#FF9800",
   chimney: "#F44336",
@@ -89,7 +91,7 @@ export default function ResultPanel({ data }: Props) {
             {roofFaces.map((r) => (
               <div key={r.id} style={styles.listItem}>
                 <div style={styles.itemHeader}>
-                  <span style={dotStyle("#4CAF50")} />
+                  <span style={dotStyle("#F44336")} />
                   <span>{CLASS_LABELS[r.class_name] || r.class_name}</span>
                   <span style={styles.confidence}>
                     {(r.confidence * 100).toFixed(0)}%

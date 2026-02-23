@@ -19,6 +19,7 @@ export interface AnalyzeResponse {
   obstacles: ObstacleInfo[];
   geojson: GeoJSON.FeatureCollection;
   satellite_image_url: string;
+  warning: string | null;
 }
 
 export async function analyzeRoof(

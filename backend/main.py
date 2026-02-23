@@ -1,7 +1,7 @@
 """
 Roof Analyzer Backend (FastAPI)
 ===============================
-좌표 → 위성이미지 → Roboflow 추론 → GeoJSON 응답
+좌표 → 위성이미지 → MobileSAM 세그멘테이션 → GeoJSON 응답
 
 흐름:
 1. /api/analyze - 클릭한 건물 좌표로 최적 줌 자동 탐색 후 분석
@@ -15,10 +15,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from satellite import fetch_satellite_image, get_image_geo_bounds
-from roboflow_client import run_inference
-from geo_converter import predictions_to_geojson, CLASS_META
+from sam_segmenter import segment_building
+from geo_converter import predictions_to_geojson, CLASS_META, calculate_polygon_area_m2
 
-app = FastAPI(title="Roof Analyzer API", version="0.1.0")
+app = FastAPI(title="Roof Analyzer API", version="0.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -56,31 +56,118 @@ class AnalyzeResponse(BaseModel):
     obstacles: list[ObstacleInfo]
     geojson: dict
     satellite_image_url: str
+    warning: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# 후처리 보정 함수
+# ---------------------------------------------------------------------------
+
+def _centroid(points: list[dict]) -> tuple[float, float]:
+    """폴리곤 점 리스트의 중심(centroid) 계산."""
+    cx = sum(p["x"] for p in points) / len(points)
+    cy = sum(p["y"] for p in points) / len(points)
+    return cx, cy
+
+
+def mark_distant_faces(
+    predictions: list[dict],
+    meters_per_pixel: float,
+    max_distance_m: float = 50.0,
+) -> list[dict]:
+    """
+    [보정] 오브젝트 간 거리가 50m 초과인 면을 오검출로 표시합니다.
+
+    같은 건물의 경사면들은 서로 인접해 있으므로, 어떤 면이 다른 모든 면과
+    50m 이상 떨어져 있으면 해당 건물의 지붕이 아닌 오검출로 판단합니다.
+
+    오검출 면은 삭제하지 않고 class를 "misdetected"로 변경하여
+    프론트엔드에서 노란색으로 표출할 수 있도록 합니다.
+
+    판정 기준:
+    - 각 face의 centroid 간 최소 거리(nearest neighbor)를 계산
+    - 가장 가까운 다른 face까지의 거리가 max_distance_m 초과 → 오검출
+
+    Args:
+        predictions: segment_building() 반환값 (building_outline + roof_faces)
+        meters_per_pixel: 줌 레벨별 픽셀당 미터
+        max_distance_m: 오브젝트 간 허용 최대 거리 (미터)
+
+    Returns:
+        오검출 면이 "misdetected"로 표시된 predictions 리스트
+    """
+    # roof_face만 추출
+    faces = [(i, p) for i, p in enumerate(predictions) if p["class"] == "roof_face"]
+
+    if len(faces) <= 1:
+        return predictions
+
+    # 각 face의 centroid 계산
+    centroids = []
+    for idx, pred in faces:
+        centroids.append((idx, _centroid(pred["points"])))
+
+    # 각 face에 대해 가장 가까운 다른 face까지의 거리 계산
+    misdetected_indices = set()
+    for i, (idx_i, (cx_i, cy_i)) in enumerate(centroids):
+        min_dist_m = float("inf")
+        for j, (idx_j, (cx_j, cy_j)) in enumerate(centroids):
+            if i == j:
+                continue
+            dist_px = ((cx_i - cx_j) ** 2 + (cy_i - cy_j) ** 2) ** 0.5
+            dist_m = dist_px * meters_per_pixel
+            min_dist_m = min(min_dist_m, dist_m)
+
+        if min_dist_m > max_distance_m:
+            misdetected_indices.add(idx_i)
+
+    # 오검출 면을 misdetected로 변경
+    removed_pixel_area = 0
+    for idx in misdetected_indices:
+        pred = predictions[idx]
+        pred["class"] = "misdetected"
+        removed_pixel_area += pred.get("pixel_area", 0)
+
+    if misdetected_indices:
+        print(f"[보정] 오검출 면 {len(misdetected_indices)}개 표시 (오브젝트 간 >{max_distance_m}m)")
+        # building_outline의 pixel_area에서 오검출 면적 차감 (면적 정합성 유지)
+        for pred in predictions:
+            if pred["class"] == "building_outline" and removed_pixel_area > 0:
+                pred["pixel_area"] = max(0, pred["pixel_area"] - removed_pixel_area)
+                break
+
+    return predictions
 
 
 def is_building_clipped(predictions: list[dict], image_size: int, margin: int) -> bool:
     """
     건물 폴리곤이 이미지 가장자리에 잘렸는지 확인.
-    폴리곤의 점이 마진 안쪽 가장자리에 닿아있으면 잘린 것으로 판단.
+    building_outline (첫 번째 예측)의 점으로만 판단.
     """
-    for pred in predictions:
-        for pt in pred.get("points", []):
-            x, y = pt["x"], pt["y"]
-            if x <= margin or x >= image_size - margin:
-                return True
-            if y <= margin or y >= image_size - margin:
-                return True
+    if not predictions:
+        return False
+
+    # building_outline = predictions[0] 기준으로 판단
+    outline = predictions[0]
+    for pt in outline.get("points", []):
+        x, y = pt["x"], pt["y"]
+        if x <= margin or x >= image_size - margin:
+            return True
+        if y <= margin or y >= image_size - margin:
+            return True
     return False
 
 
 def find_optimal_zoom_and_analyze(lat: float, lng: float):
     """
     줌 레벨 21부터 시작해서, 건물이 완전히 보이는 최대 줌을 자동 탐색.
+    SAM 포인트 프롬프트는 항상 이미지 중앙 (= 클릭 좌표) 사용.
 
     Returns:
         (predictions, bounds, zoom, image_url)
     """
-    # 줌 21 (최대 확대) → 18 (넓은 시야) 순서로 시도
+    center = IMAGE_SIZE // 2
+
     for zoom in range(21, 17, -1):
         print(f"[ZOOM] 줌 레벨 {zoom} 시도 중...")
 
@@ -93,90 +180,88 @@ def find_optimal_zoom_and_analyze(lat: float, lng: float):
             continue
 
         bounds = get_image_geo_bounds(lat=lat, lng=lng, zoom=zoom, size=IMAGE_SIZE)
-        predictions = run_inference(image_bytes)
+
+        # SAM 포인트 프롬프트: 이미지 중앙 = 클릭한 건물 위치
+        predictions = segment_building(image_bytes, click_x=center, click_y=center)
 
         if not predictions:
             print(f"[ZOOM] 줌 {zoom}: 건물 감지 없음 → 줌 아웃")
             continue
 
-        # 클릭 좌표에 가장 가까운 건물 찾기
-        target = find_closest_building(predictions, lat, lng, bounds)
-        if not target:
-            print(f"[ZOOM] 줌 {zoom}: 클릭 좌표 근처 건물 없음 → 줌 아웃")
-            continue
-
         # 건물이 이미지 가장자리에 잘렸는지 확인
-        if is_building_clipped([target], IMAGE_SIZE, EDGE_MARGIN):
+        if is_building_clipped(predictions, IMAGE_SIZE, EDGE_MARGIN):
             print(f"[ZOOM] 줌 {zoom}: 건물이 잘림 → 줌 아웃")
             continue
 
         # 건물이 온전히 보이는 최대 줌 찾음!
         print(f"[ZOOM] 최적 줌 레벨: {zoom}")
-        return [target], bounds, zoom, image_url
+        return predictions, bounds, zoom, image_url
 
-    # 모든 줌에서 실패 → 마지막 시도 결과라도 반환
+    # 모든 줌에서 실패 → 줌 19 기본값 사용
     print("[ZOOM] 최적 줌 탐색 실패 → 줌 19 기본값 사용")
     image_bytes, image_url = fetch_satellite_image(lat=lat, lng=lng, zoom=19, size=IMAGE_SIZE)
     bounds = get_image_geo_bounds(lat=lat, lng=lng, zoom=19, size=IMAGE_SIZE)
-    predictions = run_inference(image_bytes)
-    fallback_target = find_closest_building(predictions, lat, lng, bounds)
-    return [fallback_target] if fallback_target else predictions, bounds, 19, image_url
-
-
-def find_closest_building(
-    predictions: list[dict], lat: float, lng: float, bounds: dict,
-) -> dict | None:
-    """
-    클릭 좌표와 가장 가까운 건물 예측을 찾습니다.
-    클릭 좌표를 픽셀 좌표로 변환한 뒤 각 폴리곤 중심과의 거리를 비교.
-    """
-    # 클릭 좌표 → 픽셀
-    click_px = (
-        (lng - bounds["west"]) / (bounds["east"] - bounds["west"]) * IMAGE_SIZE,
-        (bounds["north"] - lat) / (bounds["north"] - bounds["south"]) * IMAGE_SIZE,
-    )
-
-    best = None
-    best_dist = float("inf")
-
-    for pred in predictions:
-        points = pred.get("points", [])
-        if not points:
-            continue
-
-        # 폴리곤 중심
-        cx = sum(p["x"] for p in points) / len(points)
-        cy = sum(p["y"] for p in points) / len(points)
-
-        dist = (cx - click_px[0]) ** 2 + (cy - click_px[1]) ** 2
-        if dist < best_dist:
-            best_dist = dist
-            best = pred
-
-    return best
+    predictions = segment_building(image_bytes, click_x=center, click_y=center)
+    return predictions, bounds, 19, image_url
 
 
 @app.post("/api/analyze", response_model=AnalyzeResponse)
 async def analyze_roof(req: AnalyzeRequest):
-    """클릭한 건물 좌표 → 최적 줌 탐색 → 분석"""
+    """클릭한 건물 좌표 → 최적 줌 탐색 → SAM 세그멘테이션 → 분석"""
     try:
         predictions, bounds, zoom, image_url = find_optimal_zoom_and_analyze(
             req.lat, req.lng,
         )
 
-        # GeoJSON 변환
+        # 후처리 보정: 오브젝트 간 50m 초과 면을 오검출(misdetected)로 표시
+        predictions = mark_distant_faces(
+            predictions,
+            meters_per_pixel=bounds["meters_per_pixel"],
+        )
+
+        # building_outline / roof_face / misdetected 분리
+        building_outline = predictions[0] if predictions else None
+        face_predictions = [p for p in predictions if p["class"] == "roof_face"]
+        misdetected = [p for p in predictions if p["class"] == "misdetected"]
+
+        # GeoJSON에 roof_face + misdetected 모두 포함 (misdetected는 노란색 표출)
+        geojson_predictions = face_predictions + misdetected
+
+        # GeoJSON 변환 (roof_face + misdetected)
         geojson, stats = predictions_to_geojson(
-            predictions=predictions,
+            predictions=geojson_predictions,
             bounds=bounds,
             image_size=IMAGE_SIZE,
         )
 
-        # 응답 구성 — 장애물만 분리
+        mpp = bounds["meters_per_pixel"]
+
+        # 면적 계산: 픽셀 카운트 기반 (label map이 overlap 없이 보장)
+        # building_outline pixel_area는 보정 후 오검출 면적이 차감된 값
+        building_pixel_area = building_outline.get("pixel_area", 0) if building_outline else 0
+        roof_area_m2 = building_pixel_area * (mpp ** 2) if building_pixel_area > 0 else 0.0
+
+        # 폴리곤 없으면 이미지 면적 폴백
+        if roof_area_m2 <= 0:
+            roof_area_m2 = stats["image_area_m2"]
+
+        # 검증: roof_face 픽셀 합산 vs building_outline 픽셀 ±10% 범위 확인
+        warning = None
+        face_pixel_sum = sum(p.get("pixel_area", 0) for p in face_predictions)
+        face_area_sum = face_pixel_sum * (mpp ** 2)
+        if building_pixel_area > 0:
+            diff_ratio = abs(face_pixel_sum - building_pixel_area) / building_pixel_area
+            print(f"[AREA] 건물 전체: {roof_area_m2:.1f}m² ({building_pixel_area}px) | 면 합산: {face_area_sum:.1f}m² ({face_pixel_sum}px) | 오차: {diff_ratio:.1%}")
+            if diff_ratio > 0.10:
+                warning = f"면적 오차범위 초과: 건물 전체 {roof_area_m2:.1f}m² vs 면 합산 {face_area_sum:.1f}m² (오차 {diff_ratio:.1%}, 허용 ±10%)"
+
+        if misdetected:
+            mis_msg = f"오검출 면 {len(misdetected)}개 감지 (노란색 표시)"
+            warning = f"{warning} | {mis_msg}" if warning else mis_msg
+
+        # 응답 구성 — 지붕면 + 오검출 + 장애물 모두 포함
         obstacles = []
-        for i, pred in enumerate(predictions):
-            meta = CLASS_META.get(pred["class"], {"type": "unknown"})
-            if meta["type"] == "roof":
-                continue
+        for i, pred in enumerate(geojson_predictions):
             obstacles.append(ObstacleInfo(
                 id=i + 1,
                 class_name=pred["class"],
@@ -189,15 +274,16 @@ async def analyze_roof(req: AnalyzeRequest):
             lat=req.lat,
             lng=req.lng,
             zoom=zoom,
-            total_roof_area_m2=round(stats["image_area_m2"], 1),
+            total_roof_area_m2=round(roof_area_m2, 1),
             total_obstacle_area_m2=round(stats["total_obstacle_area_m2"], 2),
             installable_area_m2=round(
-                stats["image_area_m2"] - stats["total_obstacle_area_m2"], 2,
+                roof_area_m2 - stats["total_obstacle_area_m2"], 2,
             ),
             obstacle_count=len(obstacles),
             obstacles=obstacles,
             geojson=geojson,
             satellite_image_url=image_url,
+            warning=warning,
         )
 
     except ValueError as e:

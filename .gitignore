@@ -6,6 +6,9 @@ backend/.venv/
 __pycache__/
 *.pyc
 
+# SAM model checkpoints
+backend/models/*.pt
+
 # Node
 frontend/node_modules/
 frontend/.next/

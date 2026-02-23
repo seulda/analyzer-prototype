@@ -7,13 +7,23 @@ Roboflow의 픽셀 좌표 예측 결과를 GeoJSON으로 변환합니다.
 import math
 
 
+# 경사면별 동적 색상 팔레트 (최대 8면)
+FACE_COLORS = [
+    "#4CAF50",  # Green
+    "#2196F3",  # Blue
+    "#FF9800",  # Orange
+    "#9C27B0",  # Purple
+    "#00BCD4",  # Cyan
+    "#E91E63",  # Pink
+    "#8BC34A",  # Light Green
+    "#FF5722",  # Deep Orange
+]
+
 # 클래스별 색상 및 메타데이터
 CLASS_META = {
-    "roof_face_south": {"color": "#4CAF50", "label": "지붕면 (남)", "type": "roof"},
-    "roof_face_north": {"color": "#66BB6A", "label": "지붕면 (북)", "type": "roof"},
-    "roof_face_east": {"color": "#81C784", "label": "지붕면 (동)", "type": "roof"},
-    "roof_face_west": {"color": "#A5D6A7", "label": "지붕면 (서)", "type": "roof"},
-    "roof_face": {"color": "#4CAF50", "label": "지붕면", "type": "roof"},
+    "building_outline": {"color": "#FFFFFF", "label": "건물 윤곽", "type": "outline"},
+    "misdetected": {"color": "#FFEB3B", "label": "오검출", "type": "misdetected"},
+    "roof_face": {"color": "#F44336", "label": "지붕면", "type": "roof"},
     "Roof": {"color": "#4CAF50", "label": "지붕", "type": "roof"},
     "skylight": {"color": "#2196F3", "label": "천창", "type": "obstacle"},
     "vent": {"color": "#FF9800", "label": "환기구", "type": "obstacle"},
@@ -100,6 +110,7 @@ def predictions_to_geojson(
     obstacle_areas = []
     obstacle_bboxes = []
     total_obstacle_area = 0.0
+    face_index = 0  # roof_face 색상 순환 인덱스
 
     for i, pred in enumerate(predictions):
         points = pred["points"]
@@ -107,6 +118,12 @@ def predictions_to_geojson(
         meta = CLASS_META.get(class_name, {
             "color": "#999999", "label": class_name, "type": "unknown",
         })
+
+        # roof_face 넘버링 (색상은 빨간색 통일)
+        if class_name == "roof_face":
+            meta = dict(meta)  # 원본 변경 방지
+            meta["label"] = f"지붕면 {face_index + 1}"
+            face_index += 1
 
         # 픽셀 → 위경도 변환
         coords = []
@@ -118,8 +135,12 @@ def predictions_to_geojson(
         if coords and coords[0] != coords[-1]:
             coords.append(coords[0])
 
-        # 면적 계산
-        area_m2 = calculate_polygon_area_m2(points, bounds, image_size, mpp)
+        # 면적 계산: pixel_area가 있으면 픽셀 기반, 없으면 Shoelace 폴백
+        pixel_area = pred.get("pixel_area")
+        if pixel_area is not None:
+            area_m2 = pixel_area * (mpp ** 2)
+        else:
+            area_m2 = calculate_polygon_area_m2(points, bounds, image_size, mpp)
         bbox_m = calculate_bbox_meters(points, mpp)
 
         obstacle_areas.append(area_m2)

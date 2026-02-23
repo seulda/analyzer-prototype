@@ -10,6 +10,11 @@ body {
   color: #e0e0e0;
 }
 
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
 /* Leaflet 컨테이너 높이 필수 */
 .leaflet-container {
   height: 100%;

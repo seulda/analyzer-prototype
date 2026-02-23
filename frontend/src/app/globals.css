@@ -83,3 +83,34 @@ body {
 .pipeline-label {
   line-height: 1;
 }
+
+/* 꼭지점 드래그 마커 (좌클릭: 드래그, 우클릭: 삭제) */
+.vertex-marker {
+  cursor: grab;
+}
+
+.vertex-marker:active {
+  cursor: grabbing;
+}
+
+/* 분석 버튼 */
+.analyze-btn {
+  width: 100%;
+  padding: 10px 0;
+  border: none;
+  border-radius: 6px;
+  background: #4CAF50;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.analyze-btn:hover {
+  background: #43A047;
+}
+
+.analyze-btn:active {
+  background: #388E3C;
+}

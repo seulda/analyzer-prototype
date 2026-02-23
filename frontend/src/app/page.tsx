@@ -1,35 +1,67 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import CoordinateForm from "@/components/CoordinateForm";
 import ResultPanel from "@/components/ResultPanel";
-import { analyzeRoof, type AnalyzeResponse } from "@/lib/api";
+import {
+  getOutline,
+  analyzeFaces,
+  type AnalyzeResponse,
+  type OutlineResponse,
+} from "@/lib/api";
 
 const RoofMap = dynamic(() => import("@/components/RoofMap"), { ssr: false });
 
-type Phase = "input" | "select" | "analyzing" | "result";
+type Phase = "input" | "select" | "outlining" | "analyzing" | "result";
 
 export default function Home() {
   const [phase, setPhase] = useState<Phase>("input");
   const [center, setCenter] = useState<{ lat: number; lng: number } | null>(null);
   const [data, setData] = useState<AnalyzeResponse | null>(null);
+  const [outlineData, setOutlineData] = useState<OutlineResponse | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // 수정된 윤곽 좌표 (RoofMap에서 콜백)
+  const modifiedPointsRef = useRef<[number, number][] | null>(null);
 
   // 1단계: 좌표 입력 → 지도 이동
   const handleNavigate = (lat: number, lng: number) => {
     setCenter({ lat, lng });
     setData(null);
+    setOutlineData(null);
+    setSessionId(null);
     setError(null);
+    modifiedPointsRef.current = null;
     setPhase("select");
   };
 
-  // 2단계: 지도에서 건물 클릭 → 분석 시작
+  // 2단계: 지도에서 건물 클릭 → 윤곽만 추출
   const handleBuildingClick = async (lat: number, lng: number) => {
     setPhase("analyzing");
     setError(null);
+    setData(null);
+    setOutlineData(null);
+    modifiedPointsRef.current = null;
     try {
-      const result = await analyzeRoof(lat, lng);
+      const result = await getOutline(lat, lng);
+      setOutlineData(result);
+      setSessionId(result.session_id);
+      setPhase("outlining");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "윤곽 추출 실패");
+      setPhase("select");
+    }
+  };
+
+  // 3단계: "분석" 버튼 클릭 → 면 분리 + 오검출 보정
+  const handleAnalyze = async () => {
+    if (!sessionId) return;
+    setPhase("analyzing");
+    setError(null);
+    try {
+      const result = await analyzeFaces(sessionId, modifiedPointsRef.current ?? undefined);
       setData(result);
       setPhase("result");
       if (result.warning) {
@@ -37,14 +69,22 @@ export default function Home() {
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "분석 실패");
-      setPhase("select");
+      setPhase("outlining");
     }
+  };
+
+  // 윤곽 편집 콜백
+  const handleOutlineEdit = (points: [number, number][]) => {
+    modifiedPointsRef.current = points;
   };
 
   // 다시 선택
   const handleReset = () => {
     setData(null);
+    setOutlineData(null);
+    setSessionId(null);
     setError(null);
+    modifiedPointsRef.current = null;
     setPhase("select");
   };
 
@@ -56,6 +96,15 @@ export default function Home() {
           loading={phase === "analyzing"}
         />
 
+        {/* "분석" 버튼 — outlining 단계에서만 표시 */}
+        {phase === "outlining" && (
+          <div style={styles.analyzeBtnWrap}>
+            <button onClick={handleAnalyze} className="analyze-btn">
+              분석
+            </button>
+          </div>
+        )}
+
         {/* 단계별 안내 */}
         <div style={styles.phaseGuide}>
           {phase === "input" && (
@@ -66,9 +115,14 @@ export default function Home() {
               지도에서 분석할 건물을 클릭하세요
             </p>
           )}
+          {phase === "outlining" && (
+            <p style={styles.guideActive}>
+              건물 윤곽을 확인/수정 후 &quot;분석&quot; 버튼을 누르세요
+            </p>
+          )}
           {phase === "analyzing" && (
             <p style={styles.guideLoading}>
-              최적 줌 레벨 탐색 + 분석 중...
+              {outlineData ? "면 분리 + 분석 중..." : "최적 줌 레벨 탐색 + 윤곽 추출 중..."}
             </p>
           )}
           {phase === "result" && data && (
@@ -90,13 +144,18 @@ export default function Home() {
         <RoofMap
           center={center}
           data={data}
+          outlineData={outlineData}
           selectable={phase === "select"}
+          editable={phase === "outlining"}
           onBuildingClick={handleBuildingClick}
+          onOutlineEdit={handleOutlineEdit}
         />
         {phase === "analyzing" && (
           <div style={styles.overlay}>
             <div style={styles.spinner} />
-            <p style={styles.overlayText}>지붕 분석 중...</p>
+            <p style={styles.overlayText}>
+              {outlineData ? "면 분리 분석 중..." : "건물 윤곽 추출 중..."}
+            </p>
           </div>
         )}
       </main>
@@ -135,6 +194,9 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: "6px",
     color: "#ff6b6b",
     fontSize: "13px",
+  },
+  analyzeBtnWrap: {
+    padding: "0 24px 8px",
   },
   phaseGuide: {
     padding: "0 24px 12px",

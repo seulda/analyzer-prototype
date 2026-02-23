@@ -1,14 +1,17 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useCallback } from "react";
 import L from "leaflet";
-import type { AnalyzeResponse } from "@/lib/api";
+import type { AnalyzeResponse, OutlineResponse } from "@/lib/api";
 
 interface Props {
   center: { lat: number; lng: number } | null;
   data: AnalyzeResponse | null;
+  outlineData: OutlineResponse | null;
   selectable: boolean;
+  editable: boolean;
   onBuildingClick: (lat: number, lng: number) => void;
+  onOutlineEdit: (points: [number, number][]) => void;
 }
 
 // 파이프라인 단계 정의
@@ -62,9 +65,11 @@ function createGeoJSONLayer(
   );
 }
 
-export default function RoofMap({ center, data, selectable, onBuildingClick }: Props) {
+export default function RoofMap({
+  center, data, outlineData, selectable, editable, onBuildingClick, onOutlineEdit,
+}: Props) {
   const mapRef = useRef<L.Map | null>(null);
-  const markerRef = useRef<L.Marker | null>(null);
+  const clickMarkerRef = useRef<L.Marker | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   // 단계별 레이어 그룹 refs
@@ -72,6 +77,17 @@ export default function RoofMap({ center, data, selectable, onBuildingClick }: P
   const faceLayerRef = useRef<L.LayerGroup | null>(null);
   const misdetectedLayerRef = useRef<L.LayerGroup | null>(null);
   const controlRef = useRef<L.Control | null>(null);
+
+  // Outline editing refs
+  const outlineEditLayerRef = useRef<L.LayerGroup | null>(null);
+  const vertexMarkersRef = useRef<L.CircleMarker[]>([]);
+  const outlinePolygonRef = useRef<L.Polygon | null>(null);
+
+  // Stable callback refs
+  const onBuildingClickRef = useRef(onBuildingClick);
+  onBuildingClickRef.current = onBuildingClick;
+  const onOutlineEditRef = useRef(onOutlineEdit);
+  onOutlineEditRef.current = onOutlineEdit;
 
   // 맵 초기화
   useEffect(() => {
@@ -95,10 +111,12 @@ export default function RoofMap({ center, data, selectable, onBuildingClick }: P
     const outlineLayer = L.layerGroup().addTo(map);
     const faceLayer = L.layerGroup().addTo(map);
     const misdetectedLayer = L.layerGroup().addTo(map);
+    const outlineEditLayer = L.layerGroup().addTo(map);
 
     outlineLayerRef.current = outlineLayer;
     faceLayerRef.current = faceLayer;
     misdetectedLayerRef.current = misdetectedLayer;
+    outlineEditLayerRef.current = outlineEditLayer;
 
     mapRef.current = map;
 
@@ -124,16 +142,16 @@ export default function RoofMap({ center, data, selectable, onBuildingClick }: P
 
       const { lat, lng } = e.latlng;
 
-      // 클릭 마커 표시
-      if (markerRef.current) {
-        markerRef.current.setLatLng([lat, lng]);
+      // 핑크색 클릭 마커 표시 (반투명)
+      if (clickMarkerRef.current) {
+        clickMarkerRef.current.setLatLng([lat, lng]);
       } else {
-        markerRef.current = L.marker([lat, lng], {
+        clickMarkerRef.current = L.marker([lat, lng], {
           icon: L.divIcon({
             className: "",
             html: `<div style="
               width:20px; height:20px; border-radius:50%;
-              background:rgba(255,87,34,0.8); border:3px solid #fff;
+              background:rgba(255,105,180,0.6); border:3px solid #fff;
               box-shadow:0 2px 6px rgba(0,0,0,0.4);
               transform:translate(-10px,-10px);
             "></div>`,
@@ -141,7 +159,7 @@ export default function RoofMap({ center, data, selectable, onBuildingClick }: P
         }).addTo(map);
       }
 
-      onBuildingClick(lat, lng);
+      onBuildingClickRef.current(lat, lng);
     };
 
     map.on("click", handleClick);
@@ -156,7 +174,186 @@ export default function RoofMap({ center, data, selectable, onBuildingClick }: P
     return () => {
       map.off("click", handleClick);
     };
-  }, [selectable, onBuildingClick]);
+  }, [selectable]);
+
+  // 편집 가능한 윤곽 표출 (outlining 모드)
+  const clearOutlineEdit = useCallback(() => {
+    outlineEditLayerRef.current?.clearLayers();
+    vertexMarkersRef.current = [];
+    outlinePolygonRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    if (!mapRef.current || !outlineEditLayerRef.current) return;
+
+    clearOutlineEdit();
+
+    // outlining 모드: editable이고 outlineData가 있을 때
+    if (!editable || !outlineData) return;
+
+    const map = mapRef.current;
+    const editLayer = outlineEditLayerRef.current;
+
+    const feature = outlineData.outline_geojson.features[0];
+    if (!feature || feature.geometry.type !== "Polygon") return;
+
+    // 폴리곤 좌표 추출 (마지막 중복 점 제거)
+    const rawCoords = feature.geometry.coordinates[0];
+    const coords = rawCoords.slice(0, -1);
+
+    // 현재 꼭지점 좌표 (mutable)
+    const currentLatLngs: L.LatLng[] = coords.map(
+      (c: number[]) => L.latLng(c[1], c[0]),
+    );
+
+    // 폴리곤 생성 (파란색)
+    const polygon = L.polygon(currentLatLngs, {
+      color: "#2196F3",
+      weight: 2,
+      fillColor: "#2196F3",
+      fillOpacity: 0.15,
+    }).addTo(editLayer);
+    outlinePolygonRef.current = polygon;
+
+    // 콜백: 현재 좌표 → onOutlineEdit 전달
+    const emitEdit = () => {
+      const points: [number, number][] = currentLatLngs.map(
+        (ll) => [ll.lng, ll.lat],
+      );
+      onOutlineEditRef.current(points);
+    };
+
+    // 점 P에서 선분 A-B까지의 거리 (픽셀 기반)
+    const distToSegment = (p: L.LatLng, a: L.LatLng, b: L.LatLng): number => {
+      const pp = map.latLngToContainerPoint(p);
+      const pa = map.latLngToContainerPoint(a);
+      const pb = map.latLngToContainerPoint(b);
+      const dx = pb.x - pa.x;
+      const dy = pb.y - pa.y;
+      const lenSq = dx * dx + dy * dy;
+      if (lenSq === 0) return pp.distanceTo(pa);
+      let t = ((pp.x - pa.x) * dx + (pp.y - pa.y) * dy) / lenSq;
+      t = Math.max(0, Math.min(1, t));
+      const proj = L.point(pa.x + t * dx, pa.y + t * dy);
+      return pp.distanceTo(proj);
+    };
+
+    // 마커 이벤트 클린업 추적
+    const cleanupFns: (() => void)[] = [];
+
+    // 마커 전체 재구성 (꼭지점 추가/삭제 후 호출)
+    const rebuildMarkers = () => {
+      // 기존 마커 이벤트 정리 + 제거
+      cleanupFns.forEach((fn) => fn());
+      cleanupFns.length = 0;
+      vertexMarkersRef.current.forEach((m) => editLayer.removeLayer(m));
+      vertexMarkersRef.current = [];
+
+      // 폴리곤 업데이트
+      polygon.setLatLngs(currentLatLngs);
+
+      const markers: L.CircleMarker[] = [];
+
+      currentLatLngs.forEach((ll, idx) => {
+        const marker = L.circleMarker(ll, {
+          radius: 6,
+          color: "#2196F3",
+          weight: 2,
+          fillColor: "#ffffff",
+          fillOpacity: 1,
+          className: "vertex-marker",
+        });
+        marker.addTo(editLayer);
+
+        // --- 드래그 ---
+        let isDragging = false;
+
+        const onMouseDown = (e: L.LeafletMouseEvent) => {
+          isDragging = true;
+          map.dragging.disable();
+          L.DomEvent.stop(e.originalEvent);
+        };
+        const onMouseMove = (e: L.LeafletMouseEvent) => {
+          if (!isDragging) return;
+          marker.setLatLng(e.latlng);
+          currentLatLngs[idx] = e.latlng;
+          polygon.setLatLngs(currentLatLngs);
+        };
+        const onMouseUp = () => {
+          if (!isDragging) return;
+          isDragging = false;
+          map.dragging.enable();
+          emitEdit();
+        };
+
+        // --- 우클릭 → 꼭지점 삭제 (최소 3개 유지) ---
+        const onVertexContext = (e: L.LeafletMouseEvent) => {
+          L.DomEvent.stop(e.originalEvent);
+          if (currentLatLngs.length <= 3) return;
+          currentLatLngs.splice(idx, 1);
+          rebuildMarkers();
+          emitEdit();
+        };
+
+        marker.on("mousedown", onMouseDown);
+        marker.on("contextmenu", onVertexContext);
+        map.on("mousemove", onMouseMove);
+        map.on("mouseup", onMouseUp);
+
+        cleanupFns.push(() => {
+          marker.off("mousedown", onMouseDown);
+          marker.off("contextmenu", onVertexContext);
+          map.off("mousemove", onMouseMove);
+          map.off("mouseup", onMouseUp);
+        });
+
+        markers.push(marker);
+      });
+
+      vertexMarkersRef.current = markers;
+    };
+
+    // --- 폴리곤 선 위 우클릭 → 가장 가까운 edge에 꼭지점 추가 ---
+    const onPolygonContext = (e: L.LeafletMouseEvent) => {
+      L.DomEvent.stop(e.originalEvent);
+      const clickLL = e.latlng;
+
+      let bestInsertIdx = 0;
+      let bestDist = Infinity;
+
+      for (let i = 0; i < currentLatLngs.length; i++) {
+        const j = (i + 1) % currentLatLngs.length;
+        const d = distToSegment(clickLL, currentLatLngs[i], currentLatLngs[j]);
+        if (d < bestDist) {
+          bestDist = d;
+          bestInsertIdx = j === 0 ? currentLatLngs.length : j;
+        }
+      }
+
+      currentLatLngs.splice(bestInsertIdx, 0, clickLL);
+      rebuildMarkers();
+      emitEdit();
+    };
+
+    polygon.on("contextmenu", onPolygonContext);
+
+    // 브라우저 기본 우클릭 메뉴 방지
+    map.getContainer().addEventListener("contextmenu", (e) => e.preventDefault());
+
+    // 초기 마커 생성
+    rebuildMarkers();
+
+    // 지도를 폴리곤에 맞춤
+    const bounds = polygon.getBounds();
+    if (bounds.isValid()) {
+      map.fitBounds(bounds, { padding: [50, 50] });
+    }
+
+    return () => {
+      cleanupFns.forEach((fn) => fn());
+      polygon.off("contextmenu", onPolygonContext);
+    };
+  }, [outlineData, editable, clearOutlineEdit]);
 
   // 데이터 변경 시 GeoJSON 렌더링 + 토글 컨트롤 갱신
   useEffect(() => {
@@ -178,11 +375,12 @@ export default function RoofMap({ center, data, selectable, onBuildingClick }: P
       controlRef.current = null;
     }
 
-    // 클릭 마커 제거
-    if (markerRef.current) {
-      markerRef.current.remove();
-      markerRef.current = null;
+    // 결과가 있으면 outline edit 레이어 클리어
+    if (data) {
+      clearOutlineEdit();
     }
+
+    // 주의: 핑크색 클릭 마커는 제거하지 않음 (분석 후에도 유지)
 
     if (!data) return;
 
@@ -271,7 +469,7 @@ export default function RoofMap({ center, data, selectable, onBuildingClick }: P
     const control = new PipelineControl();
     control.addTo(map);
     controlRef.current = control;
-  }, [data]);
+  }, [data, clearOutlineEdit]);
 
   return <div ref={containerRef} style={{ width: "100%", height: "100%" }} />;
 }

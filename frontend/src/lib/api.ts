@@ -22,6 +22,13 @@ export interface AnalyzeResponse {
   warning: string | null;
 }
 
+export interface OutlineResponse {
+  session_id: string;
+  zoom: number;
+  satellite_image_url: string;
+  outline_geojson: GeoJSON.FeatureCollection;
+}
+
 export async function analyzeRoof(
   lat: number,
   lng: number,
@@ -30,6 +37,42 @@ export async function analyzeRoof(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ lat, lng }),
+  });
+
+  if (!resp.ok) {
+    const error = await resp.json().catch(() => ({ detail: "Unknown error" }));
+    throw new Error(error.detail || `API error: ${resp.status}`);
+  }
+
+  return resp.json();
+}
+
+export async function getOutline(
+  lat: number,
+  lng: number,
+): Promise<OutlineResponse> {
+  const resp = await fetch(`${API_BASE}/api/outline`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ lat, lng }),
+  });
+
+  if (!resp.ok) {
+    const error = await resp.json().catch(() => ({ detail: "Unknown error" }));
+    throw new Error(error.detail || `API error: ${resp.status}`);
+  }
+
+  return resp.json();
+}
+
+export async function analyzeFaces(
+  session_id: string,
+  modified_points?: [number, number][],
+): Promise<AnalyzeResponse> {
+  const resp = await fetch(`${API_BASE}/api/analyze-faces`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ session_id, modified_points }),
   });
 
   if (!resp.ok) {

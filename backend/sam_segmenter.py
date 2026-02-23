@@ -343,7 +343,126 @@ def _split_roof_faces(
 
 
 # ---------------------------------------------------------------------------
-# 메인 세그멘테이션 함수
+# 공개 함수: Step 1 — 건물 윤곽만 추출
+# ---------------------------------------------------------------------------
+
+def segment_outline(
+    image_bytes: bytes,
+    click_x: int | None = None,
+    click_y: int | None = None,
+    epsilon_ratio: float = 0.015,
+    snap_deg: float = 15.0,
+    min_area_ratio: float = 0.005,
+) -> tuple[dict | None, np.ndarray | None]:
+    """
+    Step 1만: SAM → building_mask → outline polygon.
+
+    Returns:
+        (outline_pred, building_mask)
+        outline_pred: {"class": "building_outline", ...} 또는 None
+        building_mask: numpy 바이너리 마스크 또는 None
+    """
+    pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    np_image = np.array(pil_image)
+    h, w = np_image.shape[:2]
+    image_area = h * w
+
+    if click_x is None:
+        click_x = w // 2
+    if click_y is None:
+        click_y = h // 2
+
+    building_mask, confidence = _get_building_mask(np_image, click_x, click_y)
+
+    outline_points = _mask_to_polygon(
+        building_mask,
+        epsilon_ratio=epsilon_ratio,
+        snap_deg=snap_deg,
+        min_area=image_area * min_area_ratio,
+    )
+
+    if outline_points is None:
+        return None, None
+
+    building_pixel_area = int(building_mask.sum())
+
+    outline_pred = {
+        "class": "building_outline",
+        "confidence": round(confidence, 4),
+        "points": outline_points,
+        "pixel_area": building_pixel_area,
+    }
+
+    return outline_pred, building_mask
+
+
+# ---------------------------------------------------------------------------
+# 공개 함수: Step 2 — 건물 마스크로 면 분리
+# ---------------------------------------------------------------------------
+
+def segment_faces(
+    image_bytes: bytes,
+    building_mask: np.ndarray,
+    outline_confidence: float,
+    epsilon_ratio: float = 0.015,
+) -> list[dict]:
+    """
+    Step 2: building_mask로 K-means 면 분리. face predictions 반환.
+
+    Args:
+        image_bytes: 위성 이미지 바이트
+        building_mask: 건물 바이너리 마스크
+        outline_confidence: 건물 윤곽 신뢰도 (face 신뢰도 계산용)
+
+    Returns:
+        face predictions 리스트 (roof_face들)
+    """
+    pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    np_image = np.array(pil_image)
+
+    building_pixel_area = int(building_mask.sum())
+    face_masks = _split_roof_faces(np_image, building_mask)
+
+    face_predictions = []
+    for face_mask in face_masks:
+        face_points = _mask_to_polygon(
+            face_mask,
+            epsilon_ratio=epsilon_ratio * 0.5,
+            snap_deg=30,
+            min_area=0,
+        )
+
+        if face_points is None:
+            continue
+
+        face_pixel_area = int(face_mask.sum())
+        face_confidence = outline_confidence * min(
+            1.0, face_pixel_area / max(building_pixel_area, 1),
+        )
+
+        face_predictions.append({
+            "class": "roof_face",
+            "confidence": round(face_confidence, 4),
+            "points": face_points,
+            "pixel_area": face_pixel_area,
+        })
+
+    # 면 분리 결과가 없으면 건물 전체를 단일 roof_face로
+    if not face_predictions:
+        outline_points = _mask_to_polygon(building_mask, epsilon_ratio=epsilon_ratio, snap_deg=15.0, min_area=0)
+        if outline_points:
+            face_predictions.append({
+                "class": "roof_face",
+                "confidence": round(outline_confidence, 4),
+                "points": outline_points,
+                "pixel_area": building_pixel_area,
+            })
+
+    return face_predictions
+
+
+# ---------------------------------------------------------------------------
+# 메인 세그멘테이션 함수 (호환성 유지)
 # ---------------------------------------------------------------------------
 
 def segment_building(
@@ -356,86 +475,25 @@ def segment_building(
 ) -> list[dict]:
     """
     MobileSAM + OpenCV로 건물 지붕을 세그멘테이션합니다.
-    경사 지붕의 경우 각 면을 별도 폴리곤으로 분리하여 반환합니다.
-
-    Args:
-        image_bytes: 위성 이미지 바이트
-        click_x, click_y: 포인트 프롬프트 좌표 (None이면 이미지 중앙)
-        epsilon_ratio: Douglas-Peucker 단순화 비율 (둘레 대비)
-        snap_deg: 각도 스냅 단위 (도)
-        min_area_ratio: 최소 윤곽 면적 비율 (이미지 대비)
+    내부적으로 segment_outline + segment_faces를 순차 호출합니다.
 
     Returns:
         predictions:
-            [0] = {"class": "building_outline", ...}  # 건물 전체 (줌 판정용)
-            [1:] = {"class": "roof_face", ...}         # 경사면별 폴리곤
+            [0] = {"class": "building_outline", ...}
+            [1:] = {"class": "roof_face", ...}
     """
-    # 이미지 로드
-    pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    np_image = np.array(pil_image)
-    h, w = np_image.shape[:2]
-    image_area = h * w
-
-    # 클릭 좌표 기본값 = 이미지 중앙
-    if click_x is None:
-        click_x = w // 2
-    if click_y is None:
-        click_y = h // 2
-
-    # Step 1: 건물 전체 마스크 추출
-    building_mask, confidence = _get_building_mask(np_image, click_x, click_y)
-
-    # 건물 전체 윤곽 폴리곤 생성 (줌 판정용)
-    outline_points = _mask_to_polygon(
-        building_mask,
-        epsilon_ratio=epsilon_ratio,
-        snap_deg=snap_deg,
-        min_area=image_area * min_area_ratio,
+    outline_pred, building_mask = segment_outline(
+        image_bytes, click_x, click_y, epsilon_ratio, snap_deg, min_area_ratio,
     )
 
-    if outline_points is None:
+    if outline_pred is None:
         return []
 
-    building_pixel_area = int(building_mask.sum())
+    predictions = [outline_pred]
 
-    predictions = [{
-        "class": "building_outline",
-        "confidence": round(confidence, 4),
-        "points": outline_points,
-        "pixel_area": building_pixel_area,
-    }]
-
-    # Step 2: 건물 내 경사면 분리
-    face_masks = _split_roof_faces(np_image, building_mask)
-
-    for face_mask in face_masks:
-        face_points = _mask_to_polygon(
-            face_mask,
-            epsilon_ratio=epsilon_ratio * 0.5,  # 면은 약한 단순화 (경계 충실도 vs 직선 균형)
-            snap_deg=30,  # 면은 약한 snap (15°→30°, 직각/평행만 스냅)
-            min_area=0,  # _split_roof_faces()에서 이미 2% 필터링 완료
-        )
-
-        if face_points is None:
-            continue
-
-        face_pixel_area = int(face_mask.sum())
-        face_confidence = confidence * min(1.0, face_pixel_area / max(building_pixel_area, 1))
-
-        predictions.append({
-            "class": "roof_face",
-            "confidence": round(face_confidence, 4),
-            "points": face_points,
-            "pixel_area": face_pixel_area,
-        })
-
-    # 면 분리 결과가 없으면 건물 전체를 단일 roof_face로 추가
-    if len(predictions) == 1:
-        predictions.append({
-            "class": "roof_face",
-            "confidence": round(confidence, 4),
-            "points": outline_points,
-            "pixel_area": building_pixel_area,
-        })
+    face_predictions = segment_faces(
+        image_bytes, building_mask, outline_pred["confidence"], epsilon_ratio,
+    )
+    predictions.extend(face_predictions)
 
     return predictions

@@ -1,0 +1,166 @@
+"""
+GeoJSON 변환 모듈
+==================
+Roboflow의 픽셀 좌표 예측 결과를 GeoJSON으로 변환합니다.
+"""
+
+import math
+
+
+# 클래스별 색상 및 메타데이터
+CLASS_META = {
+    "roof_face_south": {"color": "#4CAF50", "label": "지붕면 (남)", "type": "roof"},
+    "roof_face_north": {"color": "#66BB6A", "label": "지붕면 (북)", "type": "roof"},
+    "roof_face_east": {"color": "#81C784", "label": "지붕면 (동)", "type": "roof"},
+    "roof_face_west": {"color": "#A5D6A7", "label": "지붕면 (서)", "type": "roof"},
+    "roof_face": {"color": "#4CAF50", "label": "지붕면", "type": "roof"},
+    "Roof": {"color": "#4CAF50", "label": "지붕", "type": "roof"},
+    "skylight": {"color": "#2196F3", "label": "천창", "type": "obstacle"},
+    "vent": {"color": "#FF9800", "label": "환기구", "type": "obstacle"},
+    "chimney": {"color": "#F44336", "label": "굴뚝", "type": "obstacle"},
+    "dormer": {"color": "#9C27B0", "label": "도머", "type": "obstacle"},
+    "antenna": {"color": "#607D8B", "label": "안테나", "type": "obstacle"},
+    "solar_panel": {"color": "#00BCD4", "label": "기존 태양광", "type": "obstacle"},
+    "other_obstruction": {"color": "#795548", "label": "기타 장애물", "type": "obstacle"},
+}
+
+
+def pixel_to_latlng(
+    px: float, py: float,
+    bounds: dict, image_size: int,
+) -> tuple[float, float]:
+    """
+    픽셀 좌표 → 위경도 변환
+
+    이미지 좌상단 = (0, 0), 우하단 = (image_size, image_size)
+    """
+    # x축: 경도 (좌→우 = west→east)
+    lng = bounds["west"] + (px / image_size) * (bounds["east"] - bounds["west"])
+
+    # y축: 위도 (상→하 = north→south)
+    lat = bounds["north"] - (py / image_size) * (bounds["north"] - bounds["south"])
+
+    return lat, lng
+
+
+def calculate_polygon_area_m2(
+    points: list[dict], bounds: dict, image_size: int, meters_per_pixel: float,
+) -> float:
+    """
+    폴리곤의 실제 면적을 계산합니다 (m²).
+
+    Shoelace formula를 픽셀 좌표에 적용 후 meters_per_pixel로 변환합니다.
+    """
+    n = len(points)
+    if n < 3:
+        return 0.0
+
+    # Shoelace formula (픽셀 단위)
+    area_px = 0.0
+    for i in range(n):
+        j = (i + 1) % n
+        area_px += points[i]["x"] * points[j]["y"]
+        area_px -= points[j]["x"] * points[i]["y"]
+
+    area_px = abs(area_px) / 2.0
+
+    # 픽셀 → m²
+    return area_px * (meters_per_pixel ** 2)
+
+
+def calculate_bbox_meters(
+    points: list[dict], meters_per_pixel: float,
+) -> dict:
+    """장애물의 바운딩 박스를 미터 단위로 계산"""
+    xs = [p["x"] for p in points]
+    ys = [p["y"] for p in points]
+
+    width_px = max(xs) - min(xs)
+    height_px = max(ys) - min(ys)
+
+    return {
+        "width_m": round(width_px * meters_per_pixel, 2),
+        "height_m": round(height_px * meters_per_pixel, 2),
+    }
+
+
+def predictions_to_geojson(
+    predictions: list[dict],
+    bounds: dict,
+    image_size: int,
+) -> tuple[dict, dict]:
+    """
+    Roboflow 예측 결과를 GeoJSON FeatureCollection으로 변환합니다.
+
+    Returns:
+        (geojson, stats)
+    """
+    mpp = bounds["meters_per_pixel"]
+    features = []
+    obstacle_areas = []
+    obstacle_bboxes = []
+    total_obstacle_area = 0.0
+
+    for i, pred in enumerate(predictions):
+        points = pred["points"]
+        class_name = pred["class"]
+        meta = CLASS_META.get(class_name, {
+            "color": "#999999", "label": class_name, "type": "unknown",
+        })
+
+        # 픽셀 → 위경도 변환
+        coords = []
+        for p in points:
+            lat, lng = pixel_to_latlng(p["x"], p["y"], bounds, image_size)
+            coords.append([lng, lat])  # GeoJSON은 [lng, lat] 순서
+
+        # 폴리곤 닫기
+        if coords and coords[0] != coords[-1]:
+            coords.append(coords[0])
+
+        # 면적 계산
+        area_m2 = calculate_polygon_area_m2(points, bounds, image_size, mpp)
+        bbox_m = calculate_bbox_meters(points, mpp)
+
+        obstacle_areas.append(area_m2)
+        obstacle_bboxes.append(bbox_m)
+
+        if meta["type"] == "obstacle":
+            total_obstacle_area += area_m2
+
+        feature = {
+            "type": "Feature",
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [coords],
+            },
+            "properties": {
+                "id": i + 1,
+                "class": class_name,
+                "label": meta["label"],
+                "type": meta["type"],
+                "confidence": round(pred["confidence"], 3),
+                "color": meta["color"],
+                "area_m2": round(area_m2, 2),
+                "width_m": bbox_m["width_m"],
+                "height_m": bbox_m["height_m"],
+            },
+        }
+        features.append(feature)
+
+    geojson = {
+        "type": "FeatureCollection",
+        "features": features,
+    }
+
+    # 이미지 전체 면적 (m²)
+    image_area_m2 = (image_size * mpp) ** 2
+
+    stats = {
+        "image_area_m2": image_area_m2,
+        "total_obstacle_area_m2": total_obstacle_area,
+        "obstacle_areas_m2": obstacle_areas,
+        "obstacle_bboxes_m": obstacle_bboxes,
+    }
+
+    return geojson, stats

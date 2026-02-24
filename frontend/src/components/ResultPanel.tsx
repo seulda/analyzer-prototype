@@ -42,7 +42,7 @@ export default function ResultPanel({ data }: Props) {
   }
 
   const obstacles = data.obstacles.filter(
-    (o) => !o.class_name.startsWith("roof_face"),
+    (o) => !o.class_name.startsWith("roof_face") && o.class_name !== "building_outline" && o.class_name !== "misdetected",
   );
   const roofFaces = data.obstacles.filter((o) =>
     o.class_name.startsWith("roof_face"),

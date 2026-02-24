@@ -67,6 +67,7 @@ export default function CoordinateForm({ onSubmit, loading }: Props) {
               onClick={() => {
                 setLat(String(p.lat));
                 setLng(String(p.lng));
+                onSubmit(p.lat, p.lng);
               }}
               style={styles.presetBtn}
             >

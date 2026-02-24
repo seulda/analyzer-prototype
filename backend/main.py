@@ -386,6 +386,7 @@ async def analyze_faces(req: AnalyzeFacesRequest):
         # Step 2: 면 분리
         face_predictions = segment_faces(
             image_bytes, building_mask, outline_pred["confidence"],
+            outline_pred=outline_pred,
         )
 
         # predictions 조합

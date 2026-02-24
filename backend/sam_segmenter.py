@@ -21,6 +21,8 @@ import cv2
 import numpy as np
 import torch
 from PIL import Image
+from shapely.geometry import Polygon as ShapelyPolygon, LineString
+from shapely.ops import split as shapely_split, unary_union
 from sklearn.metrics import silhouette_score
 
 # MobileSAM imports
@@ -204,52 +206,137 @@ def _get_building_mask(
 # Step 2: 건물 내 경사면 분리 (K-means 밝기 클러스터링)
 # ---------------------------------------------------------------------------
 
-def _find_optimal_k(pixels: np.ndarray, max_k: int = 4) -> int:
+def _boundary_linearity(label_map: np.ndarray, mask_pixels_y: np.ndarray, mask_pixels_x: np.ndarray) -> float:
     """
-    실루엣 점수를 사용하여 최적 K 선택.
-    k=2,3,4 중 가장 높은 실루엣 점수를 가진 k 반환.
-    모든 k에서 실루엣 점수가 낮으면(< 0.3) k=1 반환 (단일면).
+    label map에서 클러스터 간 경계의 직선성을 측정.
+    각 경계를 직선 피팅 후 평균 잔차(residual)를 계산.
+    반환값이 낮을수록 경계가 직선에 가까움 (좋은 분할).
+    """
+    h, w = label_map.shape
+    boundary_groups: dict[tuple[int, int], list[tuple[float, float]]] = {}
+
+    # 수평 경계
+    diff_h = label_map[:, :-1] != label_map[:, 1:]
+    valid_h = (label_map[:, :-1] > 0) & (label_map[:, 1:] > 0) & diff_h
+    ys, xs = np.where(valid_h)
+    for y, x in zip(ys, xs):
+        a, b = int(label_map[y, x]), int(label_map[y, x + 1])
+        key = (min(a, b), max(a, b))
+        boundary_groups.setdefault(key, []).append((float(x) + 0.5, float(y)))
+
+    # 수직 경계
+    diff_v = label_map[:-1, :] != label_map[1:, :]
+    valid_v = (label_map[:-1, :] > 0) & (label_map[1:, :] > 0) & diff_v
+    ys, xs = np.where(valid_v)
+    for y, x in zip(ys, xs):
+        a, b = int(label_map[y, x]), int(label_map[y + 1, x])
+        key = (min(a, b), max(a, b))
+        boundary_groups.setdefault(key, []).append((float(x), float(y) + 0.5))
+
+    if not boundary_groups:
+        return float("inf")
+
+    # 각 경계 그룹의 직선 피팅 잔차 계산
+    residuals = []
+    for pair, pixels in boundary_groups.items():
+        if len(pixels) < 5:
+            continue
+        pts = np.array(pixels, dtype=np.float32)
+        pts_cv = pts.reshape(-1, 1, 2)
+        line_params = cv2.fitLine(pts_cv, cv2.DIST_L2, 0, 0.01, 0.01)
+        vx, vy, x0, y0 = line_params.flatten()
+
+        # 각 점에서 직선까지의 거리
+        dx = pts[:, 0] - x0
+        dy = pts[:, 1] - y0
+        # 직선에 수직인 거리 = |dx * vy - dy * vx|
+        dists = np.abs(dx * vy - dy * vx)
+        residuals.append(float(np.mean(dists)))
+
+    if not residuals:
+        return float("inf")
+
+    return float(np.mean(residuals))
+
+
+def _find_optimal_k(
+    pixels: np.ndarray,
+    mask_pixels_y: np.ndarray,
+    mask_pixels_x: np.ndarray,
+    h: int,
+    w: int,
+    building_area: int,
+    max_k: int = 16,
+    max_residual_ratio: float = 0.25,
+) -> int:
+    """
+    k를 2부터 올려가며, silhouette score + 경계 직선성으로 최적 k 선택.
+
+    멈추는 조건:
+    - silhouette score < 0.15 (클러스터 분리가 약함)
+    - 새로 생긴 경계의 직선 잔차 > building_size * max_residual_ratio (경계가 구불구불)
+    - 두 조건 모두 충족하는 마지막 k를 채택
+
+    max_k: 탐색 상한 (기본 16)
+    max_residual_ratio: 건물 크기 대비 허용 잔차 비율 (기본 0.25)
     """
     if len(pixels) < 10:
         return 1
 
+    # 건물 크기 기준 상대적 잔차 한계
+    building_size = math.sqrt(building_area)
+    max_residual = building_size * max_residual_ratio
+    print(f"[K-means] building_size={building_size:.0f}px, max_residual={max_residual:.1f}px ({max_residual_ratio*100:.0f}%)")
+
     best_k = 1
-    best_score = 0.3  # 최소 임계값
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 1.0)
 
     for k in range(2, max_k + 1):
-        if len(pixels) < k:
+        if len(pixels) < k * 20:  # 클러스터당 최소 20개 픽셀
             break
 
-        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 1.0)
         _, labels, _ = cv2.kmeans(
             pixels, k, None, criteria, 10, cv2.KMEANS_PP_CENTERS,
         )
-
         labels_flat = labels.flatten()
-        # 각 클러스터에 최소 포인트가 있어야 실루엣 점수 계산 가능
+
         unique_labels = np.unique(labels_flat)
         if len(unique_labels) < 2:
-            continue
+            break
 
-        # 실루엣 점수 계산 (샘플링으로 속도 향상)
+        # silhouette score (샘플링)
         sample_size = min(5000, len(pixels))
         if sample_size < len(pixels):
             indices = np.random.choice(len(pixels), sample_size, replace=False)
-            score = silhouette_score(pixels[indices], labels_flat[indices])
+            sil_score = silhouette_score(pixels[indices], labels_flat[indices])
         else:
-            score = silhouette_score(pixels, labels_flat)
+            sil_score = silhouette_score(pixels, labels_flat)
 
-        if score > best_score:
-            best_score = score
-            best_k = k
+        # 경계 직선성 측정
+        label_map = np.zeros((h, w), dtype=np.int32)
+        label_map[mask_pixels_y, mask_pixels_x] = labels_flat + 1
+        residual = _boundary_linearity(label_map, mask_pixels_y, mask_pixels_x)
 
+        print(f"[K-means] k={k}: silhouette={sil_score:.3f}, residual={residual:.2f}px ({residual/building_size*100:.1f}%)")
+
+        if sil_score < 0.15:
+            print(f"[K-means] k={k} 탈락: silhouette 부족")
+            break
+
+        if residual > max_residual:
+            print(f"[K-means] k={k} 탈락: 경계 비직선 (>{max_residual:.1f}px)")
+            break
+
+        best_k = k
+
+    print(f"[K-means] 최적 k={best_k}")
     return best_k
 
 
 def _split_roof_faces(
     np_image: np.ndarray,
     building_mask: np.ndarray,
-    min_face_ratio: float = 0.02,
+    min_face_ratio: float = 0.05,
 ) -> list[np.ndarray]:
     """
     건물 마스크 영역 내에서 밝기 기반 K-means로 경사면 분리.
@@ -260,22 +347,35 @@ def _split_roof_faces(
     """
     h, w = np_image.shape[:2]
 
-    # HSV 변환 → V채널 (밝기)
-    hsv = cv2.cvtColor(np_image, cv2.COLOR_RGB2HSV)
-    v_channel = hsv[:, :, 2]
-
-    # 건물 마스크 영역의 밝기 값 추출
+    # 건물 마스크 영역의 픽셀 좌표 추출
     mask_pixels_y, mask_pixels_x = np.where(building_mask)
     if len(mask_pixels_y) == 0:
         return []
 
-    brightness_values = v_channel[mask_pixels_y, mask_pixels_x].astype(np.float32)
-    pixels = brightness_values.reshape(-1, 1)
+    # Lab 색공간 (밝기+색상, 인지적으로 균일)
+    lab = cv2.cvtColor(np_image, cv2.COLOR_RGB2LAB).astype(np.float32)
+    L = lab[mask_pixels_y, mask_pixels_x, 0]  # 0~255 (OpenCV scale)
+    a = lab[mask_pixels_y, mask_pixels_x, 1]  # 0~255 (centered at 128)
+    b = lab[mask_pixels_y, mask_pixels_x, 2]  # 0~255 (centered at 128)
+
+    # 정규화된 좌표 (0~1 범위)
+    x_norm = mask_pixels_x.astype(np.float32) / w
+    y_norm = mask_pixels_y.astype(np.float32) / h
+
+    # 5D 피처: [L, a, b, x*spatial_weight, y*spatial_weight]
+    spatial_weight = 0.3  # 색상 대비 공간의 상대적 가중치
+    pixels = np.column_stack([
+        L / 255.0,            # 0~1 정규화
+        a / 255.0,            # 0~1 정규화
+        b / 255.0,            # 0~1 정규화
+        x_norm * spatial_weight,
+        y_norm * spatial_weight,
+    ])
 
     building_area = building_mask.sum()
 
-    # 최적 K 선택
-    optimal_k = _find_optimal_k(pixels)
+    # 최적 K 선택 (silhouette + 경계 직선성)
+    optimal_k = _find_optimal_k(pixels, mask_pixels_y, mask_pixels_x, h, w, building_area)
 
     if optimal_k <= 1:
         return [building_mask]
@@ -342,6 +442,52 @@ def _split_roof_faces(
     return face_masks
 
 
+def _find_split_lines(face_id_map: np.ndarray) -> list[LineString]:
+    """
+    face_id_map에서 인접 면 간 경계 픽셀을 추출하고 직선으로 피팅.
+    각 능선(ridgeline)을 하나의 직선으로 반환.
+    """
+    h, w = face_id_map.shape
+    boundary_groups: dict[tuple[int, int], list[tuple[float, float]]] = {}
+
+    # 수평 경계 (좌우 인접 비교)
+    diff_h = face_id_map[:, :-1] != face_id_map[:, 1:]
+    valid_h = (face_id_map[:, :-1] > 0) & (face_id_map[:, 1:] > 0) & diff_h
+    ys, xs = np.where(valid_h)
+    for y, x in zip(ys, xs):
+        a, b = int(face_id_map[y, x]), int(face_id_map[y, x + 1])
+        key = (min(a, b), max(a, b))
+        boundary_groups.setdefault(key, []).append((float(x) + 0.5, float(y)))
+
+    # 수직 경계 (상하 인접 비교)
+    diff_v = face_id_map[:-1, :] != face_id_map[1:, :]
+    valid_v = (face_id_map[:-1, :] > 0) & (face_id_map[1:, :] > 0) & diff_v
+    ys, xs = np.where(valid_v)
+    for y, x in zip(ys, xs):
+        a, b = int(face_id_map[y, x]), int(face_id_map[y + 1, x])
+        key = (min(a, b), max(a, b))
+        boundary_groups.setdefault(key, []).append((float(x), float(y) + 0.5))
+
+    # 각 경계 그룹에 직선 피팅
+    lines = []
+    for pair, pixels in boundary_groups.items():
+        if len(pixels) < 10:
+            continue
+        pts = np.array(pixels, dtype=np.float32).reshape(-1, 1, 2)
+        line_params = cv2.fitLine(pts, cv2.DIST_L2, 0, 0.01, 0.01)
+        vx, vy, x0, y0 = line_params.flatten()
+
+        # 이미지를 충분히 넘는 길이로 연장
+        t = float(max(h, w)) * 3
+        line = LineString([
+            (x0 - vx * t, y0 - vy * t),
+            (x0 + vx * t, y0 + vy * t),
+        ])
+        lines.append(line)
+
+    return lines
+
+
 # ---------------------------------------------------------------------------
 # 공개 함수: Step 1 — 건물 윤곽만 추출
 # ---------------------------------------------------------------------------
@@ -404,52 +550,115 @@ def segment_faces(
     image_bytes: bytes,
     building_mask: np.ndarray,
     outline_confidence: float,
+    outline_pred: dict | None = None,
     epsilon_ratio: float = 0.015,
 ) -> list[dict]:
     """
-    Step 2: building_mask로 K-means 면 분리. face predictions 반환.
+    Step 2: building_mask → K-means 면 분리 → 능선(ridgeline) 추출 →
+    outline 폴리곤을 직선으로 split → 퍼즐 조각 face predictions.
 
-    Args:
-        image_bytes: 위성 이미지 바이트
-        building_mask: 건물 바이너리 마스크
-        outline_confidence: 건물 윤곽 신뢰도 (face 신뢰도 계산용)
-
-    Returns:
-        face predictions 리스트 (roof_face들)
+    핵심: 각 면의 윤곽을 독립 추출하지 않고, outline을 능선 직선으로 "칼로 잘라서"
+    겹침/빈공간 없는 퍼즐 조각을 생성.
     """
     pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     np_image = np.array(pil_image)
+    h, w = np_image.shape[:2]
 
     building_pixel_area = int(building_mask.sum())
     face_masks = _split_roof_faces(np_image, building_mask)
 
+    # building outline 폴리곤 생성
+    outline_shape = None
+    if outline_pred and "points" in outline_pred:
+        outline_pts = [(p["x"], p["y"]) for p in outline_pred["points"]]
+        if len(outline_pts) >= 3:
+            try:
+                outline_shape = ShapelyPolygon(outline_pts)
+                if not outline_shape.is_valid:
+                    outline_shape = outline_shape.buffer(0)
+            except Exception:
+                outline_shape = None
+
     face_predictions = []
-    for face_mask in face_masks:
-        face_points = _mask_to_polygon(
-            face_mask,
-            epsilon_ratio=epsilon_ratio * 0.5,
-            snap_deg=30,
-            min_area=0,
-        )
 
-        if face_points is None:
-            continue
+    if outline_shape is not None and len(face_masks) > 1:
+        # --- 능선 split 방식: label map → ridgeline → outline split ---
 
-        face_pixel_area = int(face_mask.sum())
-        face_confidence = outline_confidence * min(
-            1.0, face_pixel_area / max(building_pixel_area, 1),
-        )
+        # face_id_map 재구성 (label map)
+        face_id_map = np.zeros((h, w), dtype=np.int32)
+        for i, mask in enumerate(face_masks):
+            face_id_map[mask] = i + 1
 
-        face_predictions.append({
-            "class": "roof_face",
-            "confidence": round(face_confidence, 4),
-            "points": face_points,
-            "pixel_area": face_pixel_area,
-        })
+        # 능선 직선 추출
+        split_lines = _find_split_lines(face_id_map)
 
-    # 면 분리 결과가 없으면 건물 전체를 단일 roof_face로
+        if split_lines:
+            # outline을 능선 직선으로 순차 split (칼로 자르기)
+            pieces = [outline_shape]
+            for line in split_lines:
+                new_pieces = []
+                for piece in pieces:
+                    try:
+                        result = shapely_split(piece, line)
+                        for geom in result.geoms:
+                            if geom.geom_type == "Polygon" and not geom.is_empty:
+                                new_pieces.append(geom)
+                    except Exception:
+                        new_pieces.append(piece)
+                pieces = new_pieces
+
+            # 각 조각을 face에 배정 (label map의 대표점으로 판별)
+            face_polygon_groups: dict[int, list] = {}
+            for piece in pieces:
+                if piece.is_empty or piece.geom_type != "Polygon":
+                    continue
+                pt = piece.representative_point()
+                px = max(0, min(w - 1, int(round(pt.x))))
+                py = max(0, min(h - 1, int(round(pt.y))))
+                fid = int(face_id_map[py, px])
+                if fid == 0:
+                    continue
+                face_polygon_groups.setdefault(fid, []).append(piece)
+
+            # 같은 face의 조각 병합 → prediction 생성
+            for fid in sorted(face_polygon_groups.keys()):
+                polys = face_polygon_groups[fid]
+                merged = unary_union(polys)
+
+                if merged.geom_type == "MultiPolygon":
+                    merged = max(merged.geoms, key=lambda g: g.area)
+                if merged.geom_type != "Polygon" or merged.is_empty:
+                    continue
+
+                simplified = merged.simplify(1.5, preserve_topology=True)
+                if simplified.is_empty or simplified.geom_type != "Polygon":
+                    simplified = merged
+
+                final_points = [
+                    {"x": int(round(x)), "y": int(round(y))}
+                    for x, y in simplified.exterior.coords[:-1]
+                ]
+                if len(final_points) < 3:
+                    continue
+
+                face_pixel_area = int(face_masks[fid - 1].sum())
+                face_confidence = outline_confidence * min(
+                    1.0, face_pixel_area / max(building_pixel_area, 1),
+                )
+                face_predictions.append({
+                    "class": "roof_face",
+                    "confidence": round(face_confidence, 4),
+                    "points": final_points,
+                    "pixel_area": face_pixel_area,
+                })
+
+            face_predictions.sort(key=lambda p: p["pixel_area"], reverse=True)
+
+    # 단일 면이거나 split 결과 없으면 outline 전체를 단일 roof_face로
     if not face_predictions:
-        outline_points = _mask_to_polygon(building_mask, epsilon_ratio=epsilon_ratio, snap_deg=15.0, min_area=0)
+        outline_points = _mask_to_polygon(
+            building_mask, epsilon_ratio=epsilon_ratio, snap_deg=15.0, min_area=0,
+        )
         if outline_points:
             face_predictions.append({
                 "class": "roof_face",
@@ -492,7 +701,8 @@ def segment_building(
     predictions = [outline_pred]
 
     face_predictions = segment_faces(
-        image_bytes, building_mask, outline_pred["confidence"], epsilon_ratio,
+        image_bytes, building_mask, outline_pred["confidence"],
+        outline_pred=outline_pred, epsilon_ratio=epsilon_ratio,
     )
     predictions.extend(face_predictions)
 

@@ -352,6 +352,7 @@ export default function RoofMap({
     return () => {
       cleanupFns.forEach((fn) => fn());
       polygon.off("contextmenu", onPolygonContext);
+      map.dragging.enable();
     };
   }, [outlineData, editable, clearOutlineEdit]);
 

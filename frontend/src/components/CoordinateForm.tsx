@@ -5,6 +5,8 @@ import { useState } from "react";
 interface Props {
   onSubmit: (lat: number, lng: number) => void;
   loading: boolean;
+  onReset?: () => void;
+  showReset?: boolean;
 }
 
 // 일본 주요 좌표 프리셋
@@ -15,7 +17,7 @@ const PRESETS = [
   { label: "후쿠오카 주택가", lat: 33.5902, lng: 130.4017 },
 ];
 
-export default function CoordinateForm({ onSubmit, loading }: Props) {
+export default function CoordinateForm({ onSubmit, loading, onReset, showReset }: Props) {
   const [lat, setLat] = useState("35.6812");
   const [lng, setLng] = useState("139.7671");
 
@@ -31,6 +33,25 @@ export default function CoordinateForm({ onSubmit, loading }: Props) {
     <div style={styles.container}>
       <h2 style={styles.title}>Roof Analyzer</h2>
       <p style={styles.subtitle}>좌표를 입력하고 건물을 선택하세요</p>
+
+      <div style={styles.presets}>
+        <p style={styles.presetLabel}>빠른 선택:</p>
+        <div style={styles.presetButtons}>
+          {PRESETS.map((p) => (
+            <button
+              key={p.label}
+              onClick={() => {
+                setLat(String(p.lat));
+                setLng(String(p.lng));
+                onSubmit(p.lat, p.lng);
+              }}
+              style={styles.presetBtn}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+      </div>
 
       <form onSubmit={handleSubmit} style={styles.form}>
         <div style={styles.inputGroup}>
@@ -56,26 +77,12 @@ export default function CoordinateForm({ onSubmit, loading }: Props) {
         <button type="submit" disabled={loading} style={styles.button}>
           {loading ? "분석 중..." : "이동"}
         </button>
+        {showReset && onReset && (
+          <button type="button" onClick={onReset} style={styles.resetButton}>
+            다른 건물 선택
+          </button>
+        )}
       </form>
-
-      <div style={styles.presets}>
-        <p style={styles.presetLabel}>빠른 선택:</p>
-        <div style={styles.presetButtons}>
-          {PRESETS.map((p) => (
-            <button
-              key={p.label}
-              onClick={() => {
-                setLat(String(p.lat));
-                setLng(String(p.lng));
-                onSubmit(p.lat, p.lng);
-              }}
-              style={styles.presetBtn}
-            >
-              {p.label}
-            </button>
-          ))}
-        </div>
-      </div>
     </div>
   );
 }
@@ -131,8 +138,18 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     cursor: "pointer",
   },
+  resetButton: {
+    padding: "12px",
+    borderRadius: "6px",
+    border: "none",
+    background: "#e74c3c",
+    color: "#fff",
+    fontSize: "15px",
+    fontWeight: 600,
+    cursor: "pointer",
+    marginBottom: "12px",
+  },
   presets: {
-    marginTop: "12px",
     display: "flex",
     flexDirection: "column",
     gap: "8px",

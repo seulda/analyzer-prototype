@@ -135,7 +135,21 @@ export default function ResultPanel({ data }: Props) {
 
       {/* GeoJSON 원본 토글 */}
       <details style={styles.details}>
-        <summary style={styles.summary}>GeoJSON 원본 데이터</summary>
+        <summary style={styles.summary}>
+          <span>GeoJSON 원본 데이터</span>
+          <button
+            style={styles.copyBtn}
+            onClick={(e) => {
+              e.preventDefault();
+              navigator.clipboard.writeText(JSON.stringify(data.geojson, null, 2));
+              const btn = e.currentTarget;
+              btn.textContent = "copied!";
+              setTimeout(() => { btn.textContent = "copy"; }, 1500);
+            }}
+          >
+            copy
+          </button>
+        </summary>
         <pre style={styles.json}>
           {JSON.stringify(data.geojson, null, 2)}
         </pre>
@@ -158,7 +172,6 @@ function dotStyle(color: string): React.CSSProperties {
 const styles: Record<string, React.CSSProperties> = {
   container: {
     padding: "16px 24px",
-    overflowY: "auto",
     display: "flex",
     flexDirection: "column",
     gap: "12px",
@@ -240,6 +253,18 @@ const styles: Record<string, React.CSSProperties> = {
   summary: {
     fontSize: "12px",
     color: "#666",
+    cursor: "pointer",
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+  },
+  copyBtn: {
+    padding: "2px 8px",
+    borderRadius: "4px",
+    border: "1px solid #444",
+    background: "transparent",
+    color: "#888",
+    fontSize: "11px",
     cursor: "pointer",
   },
   json: {

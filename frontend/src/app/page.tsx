@@ -94,6 +94,8 @@ export default function Home() {
         <CoordinateForm
           onSubmit={handleNavigate}
           loading={phase === "analyzing"}
+          onReset={handleReset}
+          showReset={phase === "outlining" || phase === "result"}
         />
 
         {/* "분석" 버튼 — outlining 단계에서만 표시 */}
@@ -128,9 +130,6 @@ export default function Home() {
           {phase === "result" && data && (
             <div style={styles.zoomInfo}>
               <span>최적 줌 레벨: {data.zoom}</span>
-              <button onClick={handleReset} style={styles.resetBtn}>
-                다른 건물 선택
-              </button>
             </div>
           )}
         </div>

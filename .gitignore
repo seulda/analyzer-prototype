@@ -1,5 +1,6 @@
 # API keys & secrets
 backend/.env
+frontend/.env.local
 
 # Python
 backend/.venv/

@@ -1,3 +1,5 @@
+import type { FeatureCollection } from "geojson";
+
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 export interface ObstacleInfo {
@@ -17,7 +19,7 @@ export interface AnalyzeResponse {
   installable_area_m2: number;
   obstacle_count: number;
   obstacles: ObstacleInfo[];
-  geojson: GeoJSON.FeatureCollection;
+  geojson: FeatureCollection;
   satellite_image_url: string;
   warning: string | null;
 }
@@ -26,7 +28,7 @@ export interface OutlineResponse {
   session_id: string;
   zoom: number;
   satellite_image_url: string;
-  outline_geojson: GeoJSON.FeatureCollection;
+  outline_geojson: FeatureCollection;
 }
 
 export async function analyzeRoof(

@@ -43,7 +43,7 @@
 |------|------|
 | 좌표 변환 | Mercator 투영 기반 픽셀 → 위경도 변환 (`pixel_to_latlng`) |
 | 면적 계산 | pixel_area 기반 (label map이 overlap 없이 보장), meters_per_pixel² 변환 |
-| 지도 | **Leaflet** — 3개 레이어 토글 (1: 건물 윤곽, 2: 면 분리, 3: 오검출) |
+| 지도 | **Google Maps JavaScript API** — 3개 레이어 토글 (1: 건물 윤곽, 2: 면 분리, 3: 오검출) |
 
 ## 사용자 워크플로
 
@@ -58,7 +58,7 @@
 | 구분 | 기술 |
 |------|------|
 | Backend | Python, FastAPI, MobileSAM, OpenCV, scikit-learn, Shapely, NumPy, Pillow, PyTorch |
-| Frontend | Next.js 15, TypeScript, Leaflet |
+| Frontend | Next.js 15, TypeScript, Google Maps JavaScript API (`@vis.gl/react-google-maps`) |
 | 외부 API | Google Maps Static API |
 
 ## 실행 방법

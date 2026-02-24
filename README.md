@@ -23,10 +23,10 @@
 
 | 항목 | 내용 |
 |------|------|
-| 면 분리 | **OpenCV** K-means — 건물 마스크 내 HSV V채널(밝기) 기반 클러스터링 |
-| 최적 K 선택 | **scikit-learn** `silhouette_score` — k=2~4 중 실루엣 점수가 가장 높은 k 선택 (< 0.3이면 단일면) |
-| 소면적 처리 | connected components → 건물 면적 2% 미만 CC는 `cv2.distanceTransform`으로 최근접 면에 편입 |
-| 면 폴리곤 | **OpenCV** `findContours` → `approxPolyDP` (면은 epsilon 0.5배, snap 30°) |
+| 면 분리 | **OpenCV** K-means — 건물 마스크 내 Lab 색공간 + 정규화 좌표 5D 피처 클러스터링 |
+| 최적 K 선택 | **scikit-learn** `silhouette_score` + 경계 직선성(cv2.fitLine 잔차) — k=2~16 동적 탐색, 건물 크기 비례 임계값 |
+| 소면적 처리 | connected components → 건물 면적 5% 미만 CC는 `cv2.distanceTransform`으로 최근접 면에 편입 |
+| 면 폴리곤 | **Shapely** 능선 split — label map 경계를 직선 피팅 후 outline 폴리곤을 칼로 잘라 겹침 없는 퍼즐 조각 생성 |
 
 수정된 윤곽 좌표가 있으면 `cv2.fillPoly`로 새 마스크를 생성하여 면 분리 수행.
 
@@ -57,7 +57,7 @@
 
 | 구분 | 기술 |
 |------|------|
-| Backend | Python, FastAPI, MobileSAM, OpenCV, scikit-learn, NumPy, Pillow, PyTorch |
+| Backend | Python, FastAPI, MobileSAM, OpenCV, scikit-learn, Shapely, NumPy, Pillow, PyTorch |
 | Frontend | Next.js 15, TypeScript, Leaflet |
 | 외부 API | Google Maps Static API |
 

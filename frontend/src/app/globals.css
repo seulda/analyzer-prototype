@@ -98,3 +98,25 @@ body {
 .analyze-btn:active {
   background: #388E3C;
 }
+
+/* 다시분석 버튼 */
+.reanalyze-btn {
+  width: 100%;
+  padding: 10px 0;
+  border: none;
+  border-radius: 6px;
+  background: #FF9800;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.reanalyze-btn:hover {
+  background: #F57C00;
+}
+
+.reanalyze-btn:active {
+  background: #E65100;
+}

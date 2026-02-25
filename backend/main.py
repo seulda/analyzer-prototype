@@ -87,22 +87,16 @@ def mark_distant_faces(
     max_distance_m: float = 50.0,
 ) -> list[dict]:
     """
-    [보정] 오브젝트 간 거리가 50m 초과인 면을 오검출로 표시합니다.
+    [보정] 오브젝트 간 거리가 허용 범위 초과인 면을 오검출로 표시합니다.
 
     같은 건물의 경사면들은 서로 인접해 있으므로, 어떤 면이 다른 모든 면과
-    50m 이상 떨어져 있으면 해당 건물의 지붕이 아닌 오검출로 판단합니다.
-
-    오검출 면은 삭제하지 않고 class를 "misdetected"로 변경하여
-    프론트엔드에서 노란색으로 표출할 수 있도록 합니다.
-
-    판정 기준:
-    - 각 face의 centroid 간 최소 거리(nearest neighbor)를 계산
-    - 가장 가까운 다른 face까지의 거리가 max_distance_m 초과 → 오검출
+    허용 거리 이상 떨어져 있으면 해당 건물의 지붕이 아닌 오검출로 판단합니다.
+    허용 거리는 건물 크기에 비례하여 동적으로 계산합니다.
 
     Args:
         predictions: segment_building() 반환값 (building_outline + roof_faces)
         meters_per_pixel: 줌 레벨별 픽셀당 미터
-        max_distance_m: 오브젝트 간 허용 최대 거리 (미터)
+        max_distance_m: 오브젝트 간 최소 허용 거리 (미터, 건물 크기에 따라 확대)
 
     Returns:
         오검출 면이 "misdetected"로 표시된 predictions 리스트
@@ -112,6 +106,15 @@ def mark_distant_faces(
 
     if len(faces) <= 1:
         return predictions
+
+    # 건물 크기 기반 동적 임계값: 대형 건물은 centroid 간 거리가 클 수 있음
+    outline = next((p for p in predictions if p["class"] == "building_outline"), None)
+    if outline:
+        building_area_m2 = outline.get("pixel_area", 0) * (meters_per_pixel ** 2)
+        building_size_m = building_area_m2 ** 0.5
+        effective_max_dist = max(max_distance_m, building_size_m * 0.7)
+    else:
+        effective_max_dist = max_distance_m
 
     # 각 face의 centroid 계산
     centroids = []
@@ -129,7 +132,7 @@ def mark_distant_faces(
             dist_m = dist_px * meters_per_pixel
             min_dist_m = min(min_dist_m, dist_m)
 
-        if min_dist_m > max_distance_m:
+        if min_dist_m > effective_max_dist:
             misdetected_indices.add(idx_i)
 
     # 오검출 면을 misdetected로 변경
@@ -140,7 +143,7 @@ def mark_distant_faces(
         removed_pixel_area += pred.get("pixel_area", 0)
 
     if misdetected_indices:
-        print(f"[보정] 오검출 면 {len(misdetected_indices)}개 표시 (오브젝트 간 >{max_distance_m}m)")
+        print(f"[보정] 오검출 면 {len(misdetected_indices)}개 표시 (오브젝트 간 >{effective_max_dist:.0f}m)")
         # building_outline의 pixel_area에서 오검출 면적 차감 (면적 정합성 유지)
         for pred in predictions:
             if pred["class"] == "building_outline" and removed_pixel_area > 0:
@@ -327,6 +330,8 @@ async def get_outline(req: OutlineRequest):
             "image_url": image_url,
             "building_mask": building_mask,
             "outline_pred": outline_pred,
+            "lat": req.lat,
+            "lng": req.lng,
         }
 
         return OutlineResponse(
@@ -356,7 +361,7 @@ class AnalyzeFacesRequest(BaseModel):
 @app.post("/api/analyze-faces", response_model=AnalyzeResponse)
 async def analyze_faces(req: AnalyzeFacesRequest):
     """세션 캐시 → 면 분리 + 오검출 보정 → 전체 분석 결과 반환"""
-    session = _session_cache.pop(req.session_id, None)
+    session = _session_cache.get(req.session_id, None)
     if session is None:
         raise HTTPException(status_code=404, detail="세션이 만료되었습니다")
 
@@ -386,7 +391,6 @@ async def analyze_faces(req: AnalyzeFacesRequest):
         # Step 2: 면 분리
         face_predictions = segment_faces(
             image_bytes, building_mask, outline_pred["confidence"],
-            outline_pred=outline_pred,
         )
 
         # predictions 조합

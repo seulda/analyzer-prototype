@@ -98,6 +98,15 @@ export default function Home() {
           showReset={phase === "outlining" || phase === "result"}
         />
 
+        {/* "다시분석" 버튼 — result 단계에서만 표시 */}
+        {phase === "result" && sessionId && (
+          <div style={styles.analyzeBtnWrap}>
+            <button onClick={handleAnalyze} className="reanalyze-btn">
+              다시분석
+            </button>
+          </div>
+        )}
+
         {/* "분석" 버튼 — outlining 단계에서만 표시 */}
         {phase === "outlining" && (
           <div style={styles.analyzeBtnWrap}>

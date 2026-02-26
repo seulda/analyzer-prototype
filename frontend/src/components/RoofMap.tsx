@@ -18,6 +18,7 @@ interface Props {
   outlineData: OutlineResponse | null;
   selectable: boolean;
   editable: boolean;
+  selectedFaceId: number | null;
   onBuildingClick: (lat: number, lng: number) => void;
   onOutlineEdit: (points: [number, number][]) => void;
 }
@@ -37,6 +38,7 @@ function MapInner({
   outlineData,
   selectable,
   editable,
+  selectedFaceId,
   onBuildingClick,
   onOutlineEdit,
 }: Props) {
@@ -232,6 +234,8 @@ function MapInner({
             width_m: f.getProperty("width_m"),
             height_m: f.getProperty("height_m"),
             confidence: f.getProperty("confidence") as number,
+            azimuth_deg: f.getProperty("azimuth_deg") as number | undefined,
+            azimuth_label: f.getProperty("azimuth_label") as string | undefined,
           };
 
           const typeLabel =
@@ -241,8 +245,12 @@ function MapInner({
 
           const textColor = p.type === "misdetected" || p.type === "outline" ? "#000" : "#fff";
 
+          const azimuthInfo = p.azimuth_deg != null
+            ? `<div>방위: <strong>${p.azimuth_deg}° (${p.azimuth_label ?? ""})</strong></div>`
+            : "";
+
           const content = `
-            <div style="font-size:13px; line-height:1.6; min-width:160px;">
+            <div style="font-size:13px; line-height:1.6; min-width:160px; color:#000;">
               <strong style="font-size:14px;">${p.label}</strong>
               <span style="background:${p.color}; color:${textColor}; padding:1px 6px; border-radius:3px; font-size:11px; margin-left:6px;">
                 ${typeLabel}
@@ -250,6 +258,7 @@ function MapInner({
               <hr style="margin:6px 0; border-color:#eee;" />
               <div>면적: <strong>${p.area_m2} m²</strong></div>
               <div>크기: ${p.width_m}m x ${p.height_m}m</div>
+              ${azimuthInfo}
               <div>신뢰도: ${((p.confidence ?? 0) * 100).toFixed(1)}%</div>
             </div>
           `;
@@ -297,6 +306,31 @@ function MapInner({
       dl.setMap(layerVisible[cfg.key] ? map : null);
     }
   }, [map, layerVisible]);
+
+  // 선택된 지붕면 하이라이트
+  useEffect(() => {
+    const dl = dataLayersRef.current["face"];
+    if (!dl) return;
+
+    dl.forEach((feature) => {
+      const fid = feature.getProperty("id") as number;
+      const color = feature.getProperty("color") as string || "#ff0000";
+      if (selectedFaceId != null && fid === selectedFaceId) {
+        dl.overrideStyle(feature, {
+          fillOpacity: 0.7,
+          strokeWeight: 3,
+          strokeColor: "#fff",
+        });
+      } else {
+        dl.overrideStyle(feature, {
+          fillColor: color,
+          fillOpacity: 0.35,
+          strokeWeight: 2,
+          strokeColor: color,
+        });
+      }
+    });
+  }, [selectedFaceId]);
 
   // 맵 클릭 핸들러
   const handleMapClick = useCallback(

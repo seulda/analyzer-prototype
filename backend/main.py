@@ -12,6 +12,7 @@ Roof Analyzer Backend (FastAPI)
 from dotenv import load_dotenv
 load_dotenv()
 
+import os
 import uuid
 
 import cv2
@@ -21,8 +22,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from satellite import fetch_satellite_image, get_image_geo_bounds
-from sam_segmenter import segment_building, segment_outline, segment_faces
-from geo_converter import predictions_to_geojson, pixel_to_latlng, CLASS_META, calculate_polygon_area_m2
+from sam_segmenter import segment_building, segment_outline, segment_faces_skeleton
+from geo_converter import predictions_to_geojson, pixel_to_latlng, latlng_to_pixel, CLASS_META, calculate_polygon_area_m2
 
 app = FastAPI(title="Roof Analyzer API", version="0.3.0")
 
@@ -54,6 +55,7 @@ class ObstacleInfo(BaseModel):
     confidence: float
     area_m2: float
     bbox_m: dict
+    azimuth_deg: float | None = None
 
 
 class AnalyzeResponse(BaseModel):
@@ -170,13 +172,6 @@ def is_building_clipped(predictions: list[dict], image_size: int, margin: int) -
         if y <= margin or y >= image_size - margin:
             return True
     return False
-
-
-def latlng_to_pixel(lat: float, lng: float, bounds: dict, image_size: int) -> tuple[int, int]:
-    """geo_converter.pixel_to_latlng의 역함수: 위경도 → 픽셀 좌표"""
-    x = (lng - bounds["west"]) / (bounds["east"] - bounds["west"]) * image_size
-    y = (bounds["north"] - lat) / (bounds["north"] - bounds["south"]) * image_size
-    return int(round(x)), int(round(y))
 
 
 def find_optimal_zoom_and_outline(lat: float, lng: float):
@@ -388,10 +383,8 @@ async def analyze_faces(req: AnalyzeFacesRequest):
             outline_pred["points"] = [{"x": p[0], "y": p[1]} for p in pixel_points]
             outline_pred["pixel_area"] = int(building_mask.sum())
 
-        # Step 2: 면 분리
-        face_predictions = segment_faces(
-            image_bytes, building_mask, outline_pred["confidence"],
-        )
+        # Step 2: Skeleton 기반 면 분리
+        face_predictions = segment_faces_skeleton(outline_pred, building_mask)
 
         # predictions 조합
         predictions = [outline_pred] + face_predictions
@@ -441,13 +434,15 @@ async def analyze_faces(req: AnalyzeFacesRequest):
 
         obstacles = []
         for i, pred in enumerate(geojson_predictions):
-            obstacles.append(ObstacleInfo(
+            obs = ObstacleInfo(
                 id=i + 1,
                 class_name=pred["class"],
                 confidence=round(pred["confidence"], 3),
                 area_m2=round(stats["obstacle_areas_m2"][i], 2),
                 bbox_m=stats["obstacle_bboxes_m"][i],
-            ))
+                azimuth_deg=round(pred["azimuth_deg"], 1) if "azimuth_deg" in pred else None,
+            )
+            obstacles.append(obs)
 
         # lat/lng는 outline의 중심으로 계산
         center_px = sum(p["x"] for p in outline_pred["points"]) / len(outline_pred["points"])
@@ -537,13 +532,15 @@ async def analyze_roof(req: AnalyzeRequest):
         # 응답 구성 — 지붕면 + 오검출 + 장애물 모두 포함
         obstacles = []
         for i, pred in enumerate(geojson_predictions):
-            obstacles.append(ObstacleInfo(
+            obs = ObstacleInfo(
                 id=i + 1,
                 class_name=pred["class"],
                 confidence=round(pred["confidence"], 3),
                 area_m2=round(stats["obstacle_areas_m2"][i], 2),
                 bbox_m=stats["obstacle_bboxes_m"][i],
-            ))
+                azimuth_deg=round(pred["azimuth_deg"], 1) if "azimuth_deg" in pred else None,
+            )
+            obstacles.append(obs)
 
         return AnalyzeResponse(
             lat=req.lat,

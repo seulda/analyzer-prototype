@@ -35,6 +35,25 @@ CLASS_META = {
 }
 
 
+def latlng_to_pixel(
+    lat: float, lng: float,
+    bounds: dict, image_size: int,
+) -> tuple[int, int]:
+    """
+    위경도 → 픽셀 좌표 변환 (pixel_to_latlng의 역함수)
+    """
+    x = (lng - bounds["west"]) / (bounds["east"] - bounds["west"]) * image_size
+    y = (bounds["north"] - lat) / (bounds["north"] - bounds["south"]) * image_size
+    return int(round(x)), int(round(y))
+
+
+def _azimuth_direction(deg: float) -> str:
+    """방위각(0=북, 시계방향) → 방위 문자열"""
+    dirs = ["북", "북동", "동", "남동", "남", "남서", "서", "북서"]
+    idx = int((deg + 22.5) % 360 / 45)
+    return dirs[idx]
+
+
 def pixel_to_latlng(
     px: float, py: float,
     bounds: dict, image_size: int,
@@ -149,13 +168,7 @@ def predictions_to_geojson(
         if meta["type"] == "obstacle":
             total_obstacle_area += area_m2
 
-        feature = {
-            "type": "Feature",
-            "geometry": {
-                "type": "Polygon",
-                "coordinates": [coords],
-            },
-            "properties": {
+        props = {
                 "id": i + 1,
                 "class": class_name,
                 "label": meta["label"],
@@ -165,7 +178,19 @@ def predictions_to_geojson(
                 "area_m2": round(area_m2, 2),
                 "width_m": bbox_m["width_m"],
                 "height_m": bbox_m["height_m"],
+        }
+
+        if "azimuth_deg" in pred:
+            props["azimuth_deg"] = round(pred["azimuth_deg"], 1)
+            props["azimuth_label"] = _azimuth_direction(pred["azimuth_deg"])
+
+        feature = {
+            "type": "Feature",
+            "geometry": {
+                "type": "Polygon",
+                "coordinates": [coords],
             },
+            "properties": props,
         }
         features.append(feature)
 

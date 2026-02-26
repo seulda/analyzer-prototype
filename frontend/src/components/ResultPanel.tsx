@@ -4,6 +4,8 @@ import type { AnalyzeResponse } from "@/lib/api";
 
 interface Props {
   data: AnalyzeResponse | null;
+  selectedFaceId: number | null;
+  onFaceSelect: (id: number | null) => void;
 }
 
 const CLASS_LABELS: Record<string, string> = {
@@ -22,6 +24,12 @@ const CLASS_LABELS: Record<string, string> = {
   other_obstruction: "기타 장애물",
 };
 
+function azimuthDirection(deg: number): string {
+  const dirs = ["북", "북동", "동", "남동", "남", "남서", "서", "북서"];
+  const idx = Math.floor(((deg + 22.5) % 360) / 45);
+  return dirs[idx];
+}
+
 const CLASS_COLORS: Record<string, string> = {
   misdetected: "#FFEB3B",
   skylight: "#2196F3",
@@ -32,7 +40,7 @@ const CLASS_COLORS: Record<string, string> = {
   solar_panel: "#00BCD4",
 };
 
-export default function ResultPanel({ data }: Props) {
+export default function ResultPanel({ data, selectedFaceId, onFaceSelect }: Props) {
   if (!data) {
     return (
       <div style={styles.empty}>
@@ -88,20 +96,36 @@ export default function ResultPanel({ data }: Props) {
         <>
           <h4 style={styles.subTitle}>지붕면 ({roofFaces.length})</h4>
           <div style={styles.list}>
-            {roofFaces.map((r) => (
-              <div key={r.id} style={styles.listItem}>
-                <div style={styles.itemHeader}>
-                  <span style={dotStyle("#F44336")} />
-                  <span>{CLASS_LABELS[r.class_name] || r.class_name}</span>
-                  <span style={styles.confidence}>
-                    {(r.confidence * 100).toFixed(0)}%
-                  </span>
+            {roofFaces.map((r) => {
+              const isSelected = selectedFaceId === r.id;
+              return (
+                <div
+                  key={r.id}
+                  style={{
+                    ...styles.listItem,
+                    ...(isSelected ? styles.listItemSelected : {}),
+                    cursor: "pointer",
+                  }}
+                  onClick={() => onFaceSelect(isSelected ? null : r.id)}
+                >
+                  <div style={styles.itemHeader}>
+                    <span style={dotStyle("#F44336")} />
+                    <span>{CLASS_LABELS[r.class_name] || r.class_name}</span>
+                    <span style={styles.confidence}>
+                      {(r.confidence * 100).toFixed(0)}%
+                    </span>
+                  </div>
+                  <div style={styles.itemDetail}>
+                    {r.area_m2} m² / {r.bbox_m.width_m}m x {r.bbox_m.height_m}m
+                  </div>
+                  {r.azimuth_deg != null && (
+                    <div style={styles.itemDetail}>
+                      방위: {r.azimuth_deg}° ({azimuthDirection(r.azimuth_deg)})
+                    </div>
+                  )}
                 </div>
-                <div style={styles.itemDetail}>
-                  {r.area_m2} m² / {r.bbox_m.width_m}m x {r.bbox_m.height_m}m
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </>
       )}
@@ -223,6 +247,12 @@ const styles: Record<string, React.CSSProperties> = {
     background: "#16213e",
     borderRadius: "6px",
     padding: "10px 12px",
+    transition: "background 0.15s, border-color 0.15s",
+    border: "1px solid transparent",
+  },
+  listItemSelected: {
+    background: "#1e3a5f",
+    borderColor: "#4CAF50",
   },
   itemHeader: {
     display: "flex",

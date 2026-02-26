@@ -22,6 +22,7 @@ export default function Home() {
   const [outlineData, setOutlineData] = useState<OutlineResponse | null>(null);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [selectedFaceId, setSelectedFaceId] = useState<number | null>(null);
 
   // 수정된 윤곽 좌표 (RoofMap에서 콜백)
   const modifiedPointsRef = useRef<[number, number][] | null>(null);
@@ -145,7 +146,11 @@ export default function Home() {
 
         {error && <div style={styles.error}>{error}</div>}
         <div style={styles.divider} />
-        <ResultPanel data={data} />
+        <ResultPanel
+          data={data}
+          selectedFaceId={selectedFaceId}
+          onFaceSelect={(id) => setSelectedFaceId(id)}
+        />
       </aside>
 
       <main style={styles.main}>
@@ -155,6 +160,7 @@ export default function Home() {
           outlineData={outlineData}
           selectable={phase === "select"}
           editable={phase === "outlining"}
+          selectedFaceId={selectedFaceId}
           onBuildingClick={handleBuildingClick}
           onOutlineEdit={handleOutlineEdit}
         />

@@ -8,6 +8,7 @@ export interface ObstacleInfo {
   confidence: number;
   area_m2: number;
   bbox_m: { width_m: number; height_m: number };
+  azimuth_deg?: number | null;
 }
 
 export interface AnalyzeResponse {

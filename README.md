@@ -21,12 +21,24 @@
 
 ### Step 2. 경사면 분리 (`/api/analyze-faces`)
 
+K-means(색상)와 Distance Transform(기하학)을 **병렬 실행 후 대조**하여 면을 분리한다.
+
+```
+건물 마스크 + 위성 이미지
+  ├─ Path A: K-means → face_id_map (클러스터 ID)
+  └─ Path B: Distance Transform → nearest_edge (가장 가까운 변 ID)
+
+대조: DT 경계가 K-means 경계와 일치 → 진짜 → 유지
+      일치 안 함 → 가짜 → Union-Find로 합침
+```
+
 | 항목 | 내용 |
 |------|------|
-| 면 분리 | **OpenCV** K-means — 건물 마스크 내 Lab 색공간 + 정규화 좌표 5D 피처 클러스터링 |
-| 최적 K 선택 | **scikit-learn** `silhouette_score` + 경계 직선성(cv2.fitLine 잔차) — k=2~16 동적 탐색, 건물 크기 비례 임계값 |
-| 소면적 처리 | connected components → 건물 면적 5% 미만 CC는 `cv2.distanceTransform`으로 최근접 면에 편입 |
-| 면 폴리곤 | **Shapely** 능선 split — label map 경계를 직선 피팅 후 outline 폴리곤을 칼로 잘라 겹침 없는 퍼즐 조각 생성 |
+| Path A: K-means | 건물 마스크 내 **Lab + 정규화좌표 5D** 피처, `silhouette_score`로 최적 k 선택 (k=2~6). k=1이면 단일면 즉시 반환 |
+| Path B: DT | 윤곽 폴리곤 단순화(`_simplify_polygon`) → 각 변까지 `cv2.distanceTransform` → 가장 가까운 변에 픽셀 할당 |
+| 대조 | 인접 DT 면 쌍의 **dominant K-means cluster** 비교. 같으면 합침, 다르면 유지 |
+| 합침 | Union-Find로 그룹 결정 → 마스크 OR → `_mask_to_polygon(snap_deg=0)` |
+| Azimuth | 그룹 내 가장 긴 변의 outward normal |
 
 수정된 윤곽 좌표가 있으면 `cv2.fillPoly`로 새 마스크를 생성하여 면 분리 수행.
 
@@ -43,7 +55,7 @@
 |------|------|
 | 좌표 변환 | Mercator 투영 기반 픽셀 → 위경도 변환 (`pixel_to_latlng`) |
 | 면적 계산 | pixel_area 기반 (label map이 overlap 없이 보장), meters_per_pixel² 변환 |
-| 지도 | **Google Maps JavaScript API** — 3개 레이어 토글 (1: 건물 윤곽, 2: 면 분리, 3: 오검출) |
+| 지도 | **Google Maps JavaScript API** — 5개 레이어 토글 (1: 건물 윤곽, 2: 면 분리, 3: 오검출, K: K-means, DT: 기하학) |
 
 ## 사용자 워크플로
 
@@ -51,13 +63,13 @@
 2. 지도에서 건물 클릭 → 핑크색 마커 + 건물 윤곽 표출
 3. 꼭지점 드래그로 윤곽 보정 (우클릭: 선 위 → 추가, 꼭지점 → 삭제)
 4. "분석" 버튼 → 면 분리 + 오검출 결과 표출
-5. 1/2/3 레이어 토글로 확인
+5. 1/2/3/K/DT 레이어 토글로 확인 (K: K-means 중간결과, DT: 기하학 중간결과)
 
 ## 기술 스택
 
 | 구분 | 기술 |
 |------|------|
-| Backend | Python, FastAPI, MobileSAM, OpenCV, scikit-learn, Shapely, NumPy, Pillow, PyTorch |
+| Backend | Python, FastAPI, MobileSAM, OpenCV, scikit-learn, NumPy, Pillow, PyTorch |
 | Frontend | Next.js 15, TypeScript, Google Maps JavaScript API (`@vis.gl/react-google-maps`) |
 | 외부 API | Google Maps Static API |
 

@@ -28,6 +28,8 @@ const PIPELINE_LAYERS = [
   { key: "outline", typeMatch: "outline", label: "1", dotColor: "#2196F3", title: "건물 윤곽" },
   { key: "face", typeMatch: "roof", label: "2", dotColor: "#F44336", title: "면 분리" },
   { key: "misdetected", typeMatch: "misdetected", label: "3", dotColor: "#FFEB3B", title: "오검출" },
+  { key: "kmeans", typeMatch: "kmeans", label: "K", dotColor: "#9C27B0", title: "K-means 클러스터" },
+  { key: "dt", typeMatch: "dt", label: "DT", dotColor: "#FF9800", title: "기하학(DT) 면" },
 ] as const;
 
 const API_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || "";
@@ -53,11 +55,15 @@ function MapInner({
     outline: true,
     face: true,
     misdetected: true,
+    kmeans: false,
+    dt: false,
   });
   const [featureCounts, setFeatureCounts] = useState<Record<string, number>>({
     outline: 0,
     face: 0,
     misdetected: 0,
+    kmeans: 0,
+    dt: 0,
   });
 
   // Stable callback refs
@@ -184,7 +190,7 @@ function MapInner({
     }
 
     if (!data) {
-      setFeatureCounts({ outline: 0, face: 0, misdetected: 0 });
+      setFeatureCounts({ outline: 0, face: 0, misdetected: 0, kmeans: 0, dt: 0 });
       return;
     }
 
@@ -214,11 +220,12 @@ function MapInner({
         dataLayer.setStyle((feature) => {
           const color = feature.getProperty("color") as string || "#ff0000";
           const type = feature.getProperty("type") as string;
+          const isDebug = type === "kmeans" || type === "dt";
           return {
             fillColor: color,
-            fillOpacity: type === "outline" ? 0.05 : 0.35,
-            strokeColor: color,
-            strokeWeight: 2,
+            fillOpacity: type === "outline" ? 0.05 : isDebug ? 0.30 : 0.35,
+            strokeColor: isDebug ? "#fff" : color,
+            strokeWeight: isDebug ? 1.5 : 2,
             strokeOpacity: 1,
           };
         });
@@ -283,6 +290,8 @@ function MapInner({
       outline: newCounts.outline > 0,
       face: newCounts.face > 0,
       misdetected: newCounts.misdetected > 0,
+      kmeans: false,
+      dt: false,
     });
 
     // 지도 맞춤

@@ -19,6 +19,26 @@ FACE_COLORS = [
     "#FF5722",  # Deep Orange
 ]
 
+KMEANS_COLORS = [
+    "#E91E63",  # Pink
+    "#9C27B0",  # Purple
+    "#673AB7",  # Deep Purple
+    "#3F51B5",  # Indigo
+    "#2196F3",  # Blue
+    "#00BCD4",  # Cyan
+]
+
+DT_COLORS = [
+    "#FF9800",  # Orange
+    "#FF5722",  # Deep Orange
+    "#FFC107",  # Amber
+    "#CDDC39",  # Lime
+    "#8BC34A",  # Light Green
+    "#009688",  # Teal
+    "#00BCD4",  # Cyan
+    "#795548",  # Brown
+]
+
 # 클래스별 색상 및 메타데이터
 CLASS_META = {
     "building_outline": {"color": "#2196F3", "label": "건물 윤곽", "type": "outline"},
@@ -32,6 +52,8 @@ CLASS_META = {
     "antenna": {"color": "#607D8B", "label": "안테나", "type": "obstacle"},
     "solar_panel": {"color": "#00BCD4", "label": "기존 태양광", "type": "obstacle"},
     "other_obstruction": {"color": "#795548", "label": "기타 장애물", "type": "obstacle"},
+    "debug_kmeans": {"color": "#9C27B0", "label": "K-means", "type": "kmeans"},
+    "debug_dt": {"color": "#FF9800", "label": "DT면", "type": "dt"},
 }
 
 
@@ -130,6 +152,8 @@ def predictions_to_geojson(
     obstacle_bboxes = []
     total_obstacle_area = 0.0
     face_index = 0  # roof_face 색상 순환 인덱스
+    kmeans_index = 0
+    dt_index = 0
 
     for i, pred in enumerate(predictions):
         points = pred["points"]
@@ -138,11 +162,22 @@ def predictions_to_geojson(
             "color": "#999999", "label": class_name, "type": "unknown",
         })
 
-        # roof_face 넘버링 (색상은 빨간색 통일)
+        # roof_face 넘버링 + 개별 색상
         if class_name == "roof_face":
             meta = dict(meta)  # 원본 변경 방지
             meta["label"] = f"지붕면 {face_index + 1}"
+            meta["color"] = FACE_COLORS[face_index % len(FACE_COLORS)]
             face_index += 1
+        elif class_name == "debug_kmeans":
+            meta = dict(meta)
+            meta["label"] = f"K-means {kmeans_index + 1}"
+            meta["color"] = KMEANS_COLORS[kmeans_index % len(KMEANS_COLORS)]
+            kmeans_index += 1
+        elif class_name == "debug_dt":
+            meta = dict(meta)
+            meta["label"] = f"DT면 {dt_index + 1}"
+            meta["color"] = DT_COLORS[dt_index % len(DT_COLORS)]
+            dt_index += 1
 
         # 픽셀 → 위경도 변환
         coords = []

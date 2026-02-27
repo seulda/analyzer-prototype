@@ -22,7 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from satellite import fetch_satellite_image, get_image_geo_bounds
-from sam_segmenter import segment_building, segment_outline, segment_faces_skeleton
+from sam_segmenter import segment_building, segment_outline, segment_faces
 from geo_converter import predictions_to_geojson, pixel_to_latlng, latlng_to_pixel, CLASS_META, calculate_polygon_area_m2
 
 app = FastAPI(title="Roof Analyzer API", version="0.3.0")
@@ -383,8 +383,8 @@ async def analyze_faces(req: AnalyzeFacesRequest):
             outline_pred["points"] = [{"x": p[0], "y": p[1]} for p in pixel_points]
             outline_pred["pixel_area"] = int(building_mask.sum())
 
-        # Step 2: Skeleton 기반 면 분리
-        face_predictions = segment_faces_skeleton(outline_pred, building_mask)
+        # Step 2: K-means + 기하학 병렬 대조 면 분리
+        face_predictions, debug_preds = segment_faces(outline_pred, building_mask, image_bytes)
 
         # predictions 조합
         predictions = [outline_pred] + face_predictions
@@ -411,6 +411,13 @@ async def analyze_faces(req: AnalyzeFacesRequest):
             bounds=bounds,
             image_size=IMAGE_SIZE,
         )
+
+        # Debug layers (K-means, DT) — 별도 변환 후 GeoJSON에 병합
+        if debug_preds:
+            debug_geojson, _ = predictions_to_geojson(
+                predictions=debug_preds, bounds=bounds, image_size=IMAGE_SIZE,
+            )
+            geojson["features"].extend(debug_geojson["features"])
 
         mpp = bounds["meters_per_pixel"]
 
